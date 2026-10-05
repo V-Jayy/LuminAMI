@@ -3,9 +3,11 @@ test-work/
 dist/
 captures/
 research/
-drivers/
+drivers/*.sys
 LuminAMI-backup/
 journals/
+capture/
+driver.json
 *.capture/
 *.tmp
 *.sys
@@ -16,3 +18,4 @@ journals/
 *.obj
 *.pdb
 *.ilk
+*.res
