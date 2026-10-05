@@ -55,6 +55,13 @@ Bytes set_variable(uint32_t physical, const std::string& name, const std::string
 Bytes next_variable(uint32_t physical, const std::string& name, const std::string& guid);
 Bytes hii_read(uint32_t physical, uint32_t address, uint32_t size);
 Bytes wsmt(uint16_t port);
+struct WsmtMapping {
+    uint32_t physical;
+    uint64_t virtual_address;
+    uint64_t context_physical;
+    uint64_t context_virtual;
+};
+WsmtMapping decode_wsmt(const Bytes& packet, uint16_t port, uint64_t expected_context = 0);
 Bytes wsmt_context(const Bytes& initial, const Bytes& registers);
 } // namespace protocol
 Json inspect_hii(const Bytes& bytes);

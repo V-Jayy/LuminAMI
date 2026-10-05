@@ -235,6 +235,8 @@ Json export_live_workflow(const std::filesystem::path& capture, const std::files
     auto result = export_capture(capture, script, duplicates);
     result["source"] = "live AMI HII and varstores";
     result["capture"] = utf8(capture.wstring());
+    if (captured.contains("transport"))
+        result["transport"] = captured["transport"];
     return result;
 }
 Json export_capture(const std::filesystem::path& capture, const std::filesystem::path& script,

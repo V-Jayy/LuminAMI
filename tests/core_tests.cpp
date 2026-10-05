@@ -34,7 +34,7 @@ void word(Bytes& target, uint16_t value) {
     target.push_back(static_cast<uint8_t>(value >> 8));
 }
 Bytes fixture_hii(bool string_question = false, bool signed_question = false, uint8_t child_guard = 0,
-                  uint8_t question_flags = 0, bool duplicate_options = false) {
+                  uint8_t question_flags = 0, bool duplicate_options = false, bool equals_labels = false) {
     auto guid = guid_bytes("12345678-1234-5678-9012-123456789012");
     Bytes strings(52);
     put_le(strings, 4, 4, 52);
@@ -42,7 +42,8 @@ Bytes fixture_hii(bool string_question = false, bool signed_question = false, ui
     const std::string language = "en-US";
     std::copy(language.begin(), language.end(), strings.begin() + 46);
     for (const std::string value :
-         {"Fan Mode", "Fan configuration", "Disabled", "Enabled", "Fan Limit", "Numeric limit"}) {
+         {"Fan Mode", "Fan configuration", equals_labels ? "UCLK=MEMCLK" : "Disabled",
+          equals_labels ? "UCLK=MEMCLK/2" : "Enabled", "Fan Limit", "Numeric limit"}) {
         strings.push_back(0x14);
         for (char c : value)
             word(strings, static_cast<uint16_t>(c));
@@ -149,9 +150,9 @@ Bytes fixture_hii(bool string_question = false, bool signed_question = false, ui
     return result;
 }
 void save_capture(const std::filesystem::path& root, bool string_question = false,
-                  bool signed_question = false) {
+                  bool signed_question = false, bool equals_labels = false) {
     std::filesystem::create_directories(root);
-    auto hii = fixture_hii(string_question, signed_question);
+    auto hii = fixture_hii(string_question, signed_question, 0, 0, false, equals_labels);
     Bytes variable = {1, 100, 0, 0};
     if (signed_question) {
         variable[1] = 0xec;
@@ -207,6 +208,45 @@ int main() {
         auto negotiation = protocol::wsmt(0xb2);
         check(negotiation.size() == 0x3e && read_le(negotiation, 2, 4) == 0x11000,
               "WSMT driver negotiation packet");
+        // A negotiated response from the supported driver is sufficient even
+        // when Windows cannot expose an AMI UEFI table. Addresses are synthetic.
+        put_le(negotiation, 6, 8, 0x77a6e000);
+        put_le(negotiation, 0x0e, 8, 0x20010000000);
+        put_le(negotiation, 0x16, 8, 0x77a6d018);
+        put_le(negotiation, 0x1e, 8, 0x2000ffff018);
+        put_le(negotiation, 0x26, 8, 1);
+        put_le(negotiation, 0x26 + 8, 8, 0x77a6e000);
+        put_le(negotiation, 0x26 + 20, 4, 4);
+        auto mapping = protocol::decode_wsmt(negotiation, 0xb2);
+        check(mapping.physical == 0x77a6e000 && mapping.context_physical == 0x77a6d018,
+              "Driver-managed WSMT works without an ACPI context or guessed template version");
+        check(protocol::decode_wsmt(negotiation, 0xb2, 0x77a6d018).virtual_address == 0x20010000000,
+              "Published AMI context can corroborate the driver mapping");
+        rejects([&] { protocol::decode_wsmt(negotiation, 0xb2, 0x77a6d000); },
+                "Conflicting published context is rejected before using a mapping");
+        rejects([&] { protocol::decode_wsmt(negotiation, 0xb3); },
+                "Negotiation cannot change the validated SMI port");
+        auto malformed_mapping = negotiation;
+        malformed_mapping.pop_back();
+        rejects([&] { protocol::decode_wsmt(malformed_mapping, 0xb2); },
+                "Truncated negotiation cannot supply firmware pointers");
+        for (const auto offset : {size_t{6}, size_t{0x0e}, size_t{0x16}, size_t{0x1e}}) {
+            malformed_mapping = negotiation;
+            put_le(malformed_mapping, offset, 8, 0);
+            rejects([&] { protocol::decode_wsmt(malformed_mapping, 0xb2); },
+                    "Missing negotiated address is rejected");
+            put_le(malformed_mapping, offset, 8, UINT64_MAX);
+            rejects([&] { protocol::decode_wsmt(malformed_mapping, 0xb2); },
+                    "Negotiated address wraparound is rejected");
+        }
+        malformed_mapping = negotiation;
+        put_le(malformed_mapping, 0x26 + 8, 8, 0x77a6f000);
+        rejects([&] { protocol::decode_wsmt(malformed_mapping, 0xb2); },
+                "Context cannot refer to a different communication buffer");
+        malformed_mapping = negotiation;
+        put_le(malformed_mapping, 2, 4, protocol::MaxBuffer - 1);
+        rejects([&] { protocol::decode_wsmt(malformed_mapping, 0xb2); },
+                "Negotiation must honor the requested communication capacity");
         Bytes initial(24);
         put_le(initial, 20, 4, 0x40);
         auto context = protocol::wsmt_context(initial, protocol::smi(0xb2, 0xef, 0x12345000));
@@ -294,6 +334,21 @@ int main() {
               "Parse generated AMI-style settings");
         check(plan_import(capture, original)["patches"].empty(), "Unedited roundtrip proposes zero writes");
         auto baseline = sha256(read_file(original));
+        auto equals_capture = workspace / L"equals-labels", equals_script = workspace / L"equals.txt",
+             equals_edit = workspace / L"equals-edited.txt";
+        save_capture(equals_capture, false, false, true);
+        export_capture(equals_capture, equals_script);
+        auto equals_document = inspect_script(equals_script);
+        check(equals_document["summary"]["issues"] == 0 &&
+                  equals_document["questions"][0]["options"].size() == 2 &&
+                  equals_document["questions"][0]["options"][1]["label"] == "UCLK=MEMCLK/2",
+              "Equals signs in first and continuation option labels preserve metadata and selection");
+        check(plan_import(equals_capture, equals_script)["patches"].empty(),
+              "Unedited export with equals-containing option labels proposes zero writes");
+        edit_script(equals_script, equals_edit, 1, "0");
+        auto equals_plan = plan_import(equals_capture, equals_edit);
+        check(equals_plan["patches"].size() == 1 && equals_plan["patches"][0]["after"] == 0,
+              "Changing a selection preserves equals-containing option identities");
         auto duplicate_capture = workspace / L"duplicate-options";
         save_capture(duplicate_capture);
         auto duplicate_hii = fixture_hii(false, false, 0, 0, true);

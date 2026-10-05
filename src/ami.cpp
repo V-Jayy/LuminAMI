@@ -30,9 +30,8 @@ class AmiSession {
     uint32_t capacity_ = 0;
     uint16_t port_ = 0;
     bool owns_service_ = false;
-    uint8_t* context_ = nullptr;
-    Bytes context_template_;
     bool wsmt_ = false;
+    uint32_t driver_version_ = 0;
     static bool mapped(uint8_t* address, size_t length) {
         MEMORY_BASIC_INFORMATION info{};
         if (!VirtualQuery(address, &info, sizeof(info)) || info.State != MEM_COMMIT ||
@@ -52,7 +51,6 @@ class AmiSession {
             // WSMT mappings and fixed-buffer release are owned by the driver
             // and disposed when this session's service is stopped.
             memory_ = nullptr;
-            context_ = nullptr;
             CloseHandle(device_);
             device_ = INVALID_HANDLE_VALUE;
         }
@@ -93,13 +91,9 @@ class AmiSession {
             if (!status["smi_port_valid"].get<bool>())
                 throw Error("No valid ACPI SMI port; hardware access refused");
             wsmt_ = (status["wsmt"].value("protection_flags", uint64_t{0}) & 3) != 0;
-            if (wsmt_ &&
-                (status["ami_acpi"].value("guid", std::string{}) != "baedb05d-f2ce-485b-b454-c251870cdefc" ||
-                 status["ami_acpi"].value("version", 0) != 2 ||
-                 status["ami_acpi"].value("data_offset", 0) != 54 ||
-                 status["ami_acpi"].value("smi_command", 0) != 0xd9))
-                throw Error(
-                    "Unsupported WSMT interface; only the researched AMI v2/0xd9 interface is implemented");
+            // WSMT describes protections, not AMI protocol compatibility. The
+            // hash-verified driver discovers/negotiates the firmware interface,
+            // including boards whose UEFI ACPI table is not exposed to Windows.
             port_ = static_cast<uint16_t>(status["smi_port"].get<uint32_t>());
             auto bytes = read_file(driver);
             const auto driver_hash = sha256(bytes);
@@ -108,8 +102,7 @@ class AmiSession {
             if (!generic && driver_hash != "e7cbfb16261de1c7f009431d374d90e9eb049ba78246e38bc4c8b9e06f324b6f")
                 throw Error("Driver does not match either researched AMI driver SHA256");
             if (wsmt_ && !generic)
-                throw Error("This AMI v2 firmware requires the researched amigendrv64.sys; amifldrv64.sys "
-                            "failed fixed-buffer negotiation on this board");
+                throw Error("WSMT protected transport requires the supported amigendrv64.sys");
             ServiceHandle scm(
                 OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE));
             if (!scm.value)
@@ -144,6 +137,7 @@ class AmiSession {
                 throw Error("Cannot open AMI driver device");
             Bytes version(4);
             ioctl(protocol::Version, version);
+            driver_version_ = static_cast<uint32_t>(read_le(version, 0, 4));
             if (read_le(version, 0, 2) < 5)
                 throw Error("AMI driver version is older than the researched interface");
             capacity_ = protocol::MaxBuffer;
@@ -151,16 +145,20 @@ class AmiSession {
             if (wsmt_) {
                 auto packet = protocol::wsmt(port_);
                 ioctl(protocol::Wsmt, packet);
-                physical = read_le(packet, 6, 8);
-                virtual_address = read_le(packet, 0xe, 8);
-                auto context_physical = read_le(packet, 0x16, 8), context_virtual = read_le(packet, 0x1e, 8);
-                if (context_physical != status["ami_acpi"]["context_physical"].get<uint64_t>() ||
-                    !context_virtual)
-                    throw Error("WSMT context does not match the ACPI-published firmware buffer");
-                context_ = reinterpret_cast<uint8_t*>(context_virtual);
-                if (!mapped(context_, 0x50))
+                const auto& acpi = status["ami_acpi"];
+                const auto expected_context =
+                    acpi.value("guid", std::string{}) == "baedb05d-f2ce-485b-b454-c251870cdefc"
+                        ? acpi.value("context_physical", uint64_t{0})
+                        : uint64_t{0};
+                const auto mapping = protocol::decode_wsmt(packet, port_, expected_context);
+                physical = mapping.physical;
+                virtual_address = mapping.virtual_address;
+                auto mapped_context = reinterpret_cast<uint8_t*>(mapping.context_virtual);
+                if (!mapped(mapped_context, 0x50))
                     throw Error("WSMT context is not fully mapped");
-                context_template_ = Bytes(packet.begin() + 0x26, packet.end());
+                // The supported driver prepares and reads back the invocation
+                // context inside its SMI IOCTL. Do not write a guessed layout
+                // from userspace; the UEFI table can be absent or unrelated.
             } else {
                 auto packet = protocol::allocation(capacity_);
                 ioctl(protocol::Allocate, packet);
@@ -181,16 +179,18 @@ class AmiSession {
     ~AmiSession() { cleanup(); }
     AmiSession(const AmiSession&) = delete;
     uint32_t physical() const { return physical_; }
+    Json transport() const {
+        return {{"mode", wsmt_ ? "wsmt-driver-managed" : "unprotected-ami"},
+                {"driver_version", driver_version_},
+                {"buffer_capacity", capacity_},
+                {"negotiated", true}};
+    }
     Bytes invoke(Bytes packet, size_t header_offset = 0) {
         if (packet.size() > capacity_ || packet.size() < header_offset + 0x30)
             throw Error("AMI request exceeds mapped buffer");
         std::fill(memory_, memory_ + capacity_, uint8_t{0});
         std::copy(packet.begin(), packet.end(), memory_);
         auto registers = protocol::smi(port_, 0xef, physical_ + static_cast<uint32_t>(header_offset));
-        if (wsmt_) {
-            auto context = protocol::wsmt_context(context_template_, registers);
-            std::copy(context.begin(), context.end(), context_);
-        }
         ioctl(protocol::Smi, registers);
         std::copy(memory_, memory_ + packet.size(), packet.begin());
         return packet;
@@ -258,6 +258,7 @@ Json capture_ami(const std::filesystem::path& driver, const std::filesystem::pat
         throw Error("Capture directory already exists");
     auto status = probe_windows();
     AmiSession session(driver);
+    status["ami_session"] = session.transport();
     auto hii = session.hii();
     std::filesystem::create_directories(output);
     write_file(output / L"hii.bin", hii); // Retain raw evidence even when a later decoder fails.
@@ -305,6 +306,7 @@ Json capture_ami(const std::filesystem::path& driver, const std::filesystem::pat
             {"questions", catalog["questions"].size()},
             {"variables", variables.size()},
             {"unavailable_variables", unavailable.size()},
+            {"transport", session.transport()},
             {"writes_firmware", false},
             {"validation", "read capture only; write and reboot checks still required"}};
 }

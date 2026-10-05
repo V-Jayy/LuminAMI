@@ -112,8 +112,15 @@ are not verified. Password unlock, authenticated variables, computed fields,
 and unsupported vendor flows are rejected or kept read-only. Windows security
 settings are never changed to load a driver.
 
+Live export was also verified on an ASUS TUF GAMING B650E-E WIFI, BIOS 0215,
+with WSMT protections enabled and no UEFI ACPI table exposed to Windows. The
+driver negotiates and manages that protected interface. This is capability
+detection, with no motherboard-model allowlist; it is not a guarantee for all
+motherboards or non-AMI firmware. See [compatibility](docs/COMPATIBILITY.md).
+
 ## Credits
 
+- Billz
 - [Lumin / discord.gg/lumin](https://discord.gg/lumin)
 - [nlohmann/json](https://github.com/nlohmann/json), by Niels Lohmann — MIT
 

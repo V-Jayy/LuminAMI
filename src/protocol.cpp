@@ -93,6 +93,22 @@ Bytes wsmt(uint16_t port) {
     put_le(packet, 2, 4, MaxBuffer);
     return packet;
 }
+WsmtMapping decode_wsmt(const Bytes& packet, uint16_t port, uint64_t expected_context) {
+    if (packet.size() != 0x3e || !port || read_le(packet, 0, 2) != port || read_le(packet, 2, 4) != MaxBuffer)
+        throw Error("AMI WSMT negotiation returned an invalid packet header");
+    auto physical = read_le(packet, 6, 8), virtual_address = read_le(packet, 0x0e, 8),
+         context_physical = read_le(packet, 0x16, 8), context_virtual = read_le(packet, 0x1e, 8);
+    if (!physical || physical > UINT32_MAX - MaxBuffer || !virtual_address ||
+        virtual_address > UINTPTR_MAX - MaxBuffer || !context_physical ||
+        context_physical > UINT64_MAX - 0x50 || !context_virtual || context_virtual > UINTPTR_MAX - 0x50 ||
+        read_le(packet, 0x26 + 8, 8) != physical)
+        throw Error("AMI WSMT negotiation returned invalid or inconsistent fixed-buffer mappings");
+    if (expected_context && context_physical != expected_context)
+        throw Error("WSMT context does not match the ACPI-published firmware buffer");
+    // The last fields of the 24-byte context template are opaque firmware state,
+    // not a version number. Let the hash-verified driver manage that context.
+    return {static_cast<uint32_t>(physical), virtual_address, context_physical, context_virtual};
+}
 Bytes wsmt_context(const Bytes& initial, const Bytes& registers) {
     if (initial.size() != 24 || registers.size() != 0x26)
         throw Error("Invalid WSMT context inputs");

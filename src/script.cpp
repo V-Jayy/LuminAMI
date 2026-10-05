@@ -112,7 +112,9 @@ Json parse(const std::vector<Line>& source) {
     for (size_t i = 0; i < source.size(); ++i) {
         auto text = normalize(source[i].text);
         std::smatch match;
-        if (std::regex_match(text, match, field)) {
+        // Option labels may contain '=' (for example UCLK=MEMCLK). Recognize
+        // continuation rows before treating text as a metadata assignment.
+        if (!(in_options && std::regex_match(text, match, option)) && std::regex_match(text, match, field)) {
             auto key = trim(match[1].str()), value = trim(match[2].str());
             bool quoted = key == "Value" && !value.empty() && value.front() == '"';
             auto comment = value.find("//");

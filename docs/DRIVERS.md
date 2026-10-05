@@ -22,10 +22,21 @@ Run live commands from an administrator terminal. Close other AMI utilities
 first: LuminAMI refuses to use an existing `GENERICDRV` service. It creates its
 own temporary service and removes that service when the session ends normally.
 
-The implemented WSMT path is AMI v2 with command `0xD9`; it requires the listed
-`amigendrv64.sys`. Other protected interfaces are rejected. Unprotected transport
-also checks driver version, mapped buffer bounds, and the ACPI SMI port.
+Protected WSMT transport requires the listed `amigendrv64.sys`. LuminAMI asks
+that hash-verified driver to negotiate the firmware's fixed communication buffer
+and manage its SMI context, as the supplied AMISCE 5.05.01.0002 driver does.
+An AMI UEFI ACPI table exposed through Windows is optional. Its absence alone
+does not mean the board is unsupported. When a recognized AMI table publishes
+a context address, it must match the driver's negotiated address.
+
+Negotiation must succeed and return consistent, mapped, non-overflowing buffers.
+Failure stops the command; it does not fall back to unprotected allocation on
+a WSMT-protected system. Unprotected transport still checks driver version,
+mapped buffer bounds, and the ACPI SMI port.
 
 If Windows blocks the driver, the command reports the Windows error and stops.
 LuminAMI does not change Secure Boot, Memory Integrity, or driver security policy.
 Driver acceptance does not establish compatibility with every AMI BIOS.
+
+See [compatibility and hardware validation](COMPATIBILITY.md) for the supported
+scope and the locally verified export results.
