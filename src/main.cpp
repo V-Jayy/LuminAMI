@@ -57,7 +57,8 @@ Json launch_install(const std::filesystem::path& directory, bool no_path) {
         script += L" -Directory " + literal(std::filesystem::absolute(directory).wstring());
     if (no_path)
         script += L" -NoPath";
-    script += L" } catch { $_ | Out-File -LiteralPath " + literal(log.wstring()) + L" -Append; exit 1 }";
+    script += L" } catch { $_ | Out-File -LiteralPath " + literal(log.wstring()) +
+              L" -Append -Encoding utf8; exit 1 }";
     const auto* bytes = reinterpret_cast<const uint8_t*>(script.data());
     const size_t size = script.size() * sizeof(wchar_t);
     constexpr char digits[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

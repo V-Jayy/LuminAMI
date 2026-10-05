@@ -42,7 +42,12 @@ try {
     $lines = @(Get-Content -LiteralPath $hashPath | Where-Object { $_ -match $pattern })
     if ($lines.Count -ne 1) { throw 'Release checksum is missing or ambiguous.' }
     $null = $lines[0] -match $pattern
-    if ((Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash -ne $Matches[1]) {
+    $expectedHash = $Matches[1]
+    $stream = [IO.File]::OpenRead($zipPath)
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try { $actualHash = [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '') }
+    finally { $stream.Dispose(); $sha256.Dispose() }
+    if ($actualHash -ne $expectedHash) {
         throw 'Release checksum did not match. Nothing was installed.'
     }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
