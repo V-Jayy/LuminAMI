@@ -1,6 +1,7 @@
 #define NOMINMAX
 #include <Windows.h>
 #include "core.hpp"
+#include "drivers.hpp"
 #include <functional>
 #include <iostream>
 #include <random>
@@ -324,6 +325,56 @@ int main() {
         auto workspace = std::filesystem::absolute(L"test-work") /
                          (std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
         std::filesystem::create_directories(workspace);
+        auto driver_state = workspace / L"driver-state";
+        auto driver_cache = workspace / L"provided drivers";
+        check(!ami_driver_status(driver_state)["configured"].get<bool>(),
+              "Empty driver state is not configured");
+        rejects([&] { resolve_ami_driver({}, driver_state); },
+                "Headless driver lookup never installs implicitly");
+        rejects([&] { verify_ami_driver(text("not a driver")); }, "Unsupported driver bytes are rejected");
+        for (const auto& source : DriverSources) {
+            auto bytes = provided_ami_driver(source);
+            check(sha256(bytes) == source.sha256, "Embedded driver bytes match pinned hash");
+            check(std::string(verify_ami_driver(bytes).name) == source.name,
+                  "Driver type is identified by bytes");
+        }
+        auto installed = install_ami_drivers(driver_cache, driver_state);
+        check(installed["ok"] == true && installed["loads_driver"] == false &&
+                  installed["writes_firmware"] == false,
+              "Installer extracts without loading a driver or accessing firmware");
+        check(installed["drivers"].size() == 2 && installed["drivers"][0]["extracted"] == true,
+              "Installer supplies both AMI drivers");
+        check(resolve_ami_driver({}, driver_state) == driver_cache / L"amigendrv64.sys",
+              "Installed default is resolved from persistent state");
+        auto reused = install_ami_drivers(driver_cache, driver_state);
+        check(reused["drivers"][0]["extracted"] == false && reused["drivers"][1]["extracted"] == false,
+              "Repeated installation reuses verified files");
+        auto custom = workspace / L"custom driver.sys";
+        write_file(custom, provided_ami_driver(DriverSources[1]));
+        remember_ami_driver(custom, driver_state);
+        check(resolve_ami_driver({}, driver_state) == custom,
+              "A custom path is remembered without copying the file");
+        auto config_hash = sha256(read_file(driver_state / L"driver.json"));
+        auto invalid_driver = workspace / L"invalid.sys";
+        write_file(invalid_driver, text("wrong bytes"));
+        rejects([&] { remember_ami_driver(invalid_driver, driver_state); },
+                "Invalid custom selection fails before saving");
+        check(sha256(read_file(driver_state / L"driver.json")) == config_hash,
+              "Rejected selection keeps the previous choice");
+        write_file(custom, text("replaced after selection"), true);
+        check(ami_driver_status(driver_state)["configured"] == false,
+              "Saved drivers are verified again on lookup");
+        rejects([&] { resolve_ami_driver({}, driver_state); },
+                "Changed custom bytes are never silently replaced or loaded");
+        auto bad_cache = workspace / L"bad-driver-cache";
+        std::filesystem::create_directories(bad_cache);
+        write_file(bad_cache / L"amigendrv64.sys", text("existing unverified file"));
+        rejects([&] { install_ami_drivers(bad_cache, driver_state); },
+                "Installer does not overwrite a mismatched existing driver");
+        check(!std::filesystem::exists(bad_cache / L"amifldrv64.sys"),
+              "Failed installation publishes no other driver");
+        check(sha256(read_file(driver_state / L"driver.json")) == config_hash,
+              "Failed installation does not change selection");
         auto capture = workspace / L"capture", original = workspace / L"original.txt",
              edited = workspace / L"edited.txt", numeric = workspace / L"numeric.txt";
         save_capture(capture);

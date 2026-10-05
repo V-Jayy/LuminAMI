@@ -1,128 +1,76 @@
 # LuminAMI
 
-Export your AMI BIOS settings to a text file, edit them, and import them back.
-Built in C++20 for Windows x64. Use the executable directly or use the included
-scripts if you just want to get going.
+Export your AMI BIOS settings, edit the text file, and import them back.
+Made by **Jayy and Billz**, from [Lumin / discord.gg/lumin](https://discord.gg/lumin).
+Windows x64, C++20.
 
-Made by [Lumin](https://discord.gg/lumin). If you need help or want to share
-results from your board, join [discord.gg/lumin](https://discord.gg/lumin).
+## Install
 
-## Download
-
-Grab **LuminAMI-v0.1.0-windows-x64.zip** from the
-[releases page](https://github.com/V-Jayy/LuminAMI/releases/latest) and extract it.
-Run `LuminAMI.cmd` for the command menu, or open a terminal in that folder.
-
-Live export/import needs an administrator terminal and a supported AMI driver.
-Drivers are **not included**. See [driver requirements](docs/DRIVERS.md) for the
-two accepted files and their hashes. Offline editing and import planning don't
-need a driver or administrator access.
-
-## Export, edit, import
-
-From an administrator terminal:
+Paste this into PowerShell. It downloads the latest GitHub release, checks its
+SHA256, installs to your user folder, adds LuminAMI to PATH, and extracts the
+provided drivers. It keeps any custom driver you've already selected.
 
 ```powershell
-.\Export.cmd -Driver .\drivers\amigendrv64.sys
+irm https://raw.githubusercontent.com/V-Jayy/LuminAMI/main/install.ps1 | iex
 ```
 
-This creates `LuminAMI-backup` with `BIOSSettings.txt`, an untouched
-`OriginalSettings.txt`, `Dupes.txt`, and the raw `capture` folder. Keep that whole
-folder. The capture is needed to validate an import and restore your backup.
+Or download the ZIP from [releases](https://github.com/V-Jayy/LuminAMI/releases/latest).
+Run `LuminAMI.cmd` for the menu or `InstallDrivers.cmd` to choose a driver.
+Open a new terminal after installing. To update later: `LuminAMI install`.
+That command starts the installer in the background; check the log path it prints.
 
-Open `BIOSSettings.txt` in a text editor. Move the `*` to the option you want, or
-edit the `Value` for a numeric/string setting. Leave tokens, offsets, widths,
-and commented-out settings alone.
+## Use
+
+Open an **administrator terminal** for live export/import:
 
 ```powershell
-# Check what changed and generate a plan. This does not write to the BIOS.
-.\Import.cmd
-
-# Apply the edited file, with readback and a transaction journal.
-.\Import.cmd -Driver .\drivers\amigendrv64.sys -Apply
+LuminAMI -e BIOSSettings.txt
+notepad BIOSSettings.txt
+LuminAMI -i BIOSSettings.txt --plan
+LuminAMI -i BIOSSettings.txt
 ```
 
-Use `-Workspace .\my-backup` on both scripts to choose another backup folder.
-Use `-Script .\edited.txt` on import to load a separate edited file. Export
-requires a new folder so it doesn't overwrite an older backup.
-
-## Direct commands
+Move the `*` to your chosen option, or edit the `Value` for numeric/string
+settings. Keep `BIOSSettings.txt.capture` with the file; imports need that backup.
+`--plan` only checks changes. `-i` applies them, reads them back, and saves a
+unique journal. Existing export files are preserved.
 
 ```powershell
-.\LuminAMI.exe --help
-.\LuminAMI.exe export --driver .\drivers\amigendrv64.sys --capture .\capture --script settings.txt --dupes Dupes.txt
-.\LuminAMI.exe inspect --script settings.txt
-.\LuminAMI.exe edit --script settings.txt --output edited.txt --token 0x2B --value 0
-.\LuminAMI.exe diff --before settings.txt --after edited.txt
-.\LuminAMI.exe import --capture .\capture --script edited.txt --output plan.json
-.\LuminAMI.exe import --driver .\drivers\amigendrv64.sys --capture .\capture --script edited.txt --journal import.json
+# Provided drivers, headless export, or your own supported driver path.
+LuminAMI install-drivers
+LuminAMI -e backup.txt --non-interactive
+LuminAMI use-driver --driver "C:\Drivers\amigendrv64.sys"
+LuminAMI driver-status
+
+# Help and advanced commands.
+LuminAMI -h
+LuminAMI help
+LuminAMI ami help
+LuminAMI ami import --capture BIOSSettings.txt.capture --script BIOSSettings.txt --output plan.json
 ```
 
-The token and value above are examples. Use the ones from your own export.
+Your driver choice is saved and reused from any folder. Export offers setup if
+none is saved. Both short commands accept `--driver PATH`, `--install-drivers`,
+`--non-interactive`, and `--capture DIR` for a moved/renamed settings file.
+`-p <password>` is reserved for your existing BIOS password; authentication isn't
+supported yet, so using it returns an error without logging the password.
 
-The `/O`, `/I`, `/S`, and `/SD` aliases are there if you're used to SCEWIN syntax:
+BIOS writes can leave a system unable to boot. Know your board's recovery process.
+Read compatibility and write testing are limited; see [compatibility](docs/COMPATIBILITY.md).
+Use LuminAMI exports with their matching captures, not SCEWIN files.
+[Commands](docs/COMMANDS.md) · [Editing](docs/SETTINGS.md) · [Drivers](docs/DRIVERS.md)
 
-```powershell
-.\LuminAMI.exe /O /S settings.txt /SD Dupes.txt --driver .\drivers\amigendrv64.sys --capture .\capture
-.\LuminAMI.exe /I /S edited.txt --capture .\capture
-```
+## Build and credits
 
-LuminAMI uses its own export identities. Use its exports with their matching
-captures; a SCEWIN export is not a drop-in live import. It doesn't run SCEWIN.
-
-[Full command reference](docs/COMMANDS.md) ·
-[Editing settings](docs/SETTINGS.md) ·
-[Driver requirements](docs/DRIVERS.md)
-
-## Restore a backup
-
-```powershell
-.\Restore.cmd -Driver .\drivers\amigendrv64.sys -Workspace .\LuminAMI-backup
-```
-
-Restore reads fresh firmware and restores supported settings from your capture,
-preserving unrelated current bytes. Keep the journals if an operation fails.
-
-## Build
-
-Install Visual Studio 2022 C++ build tools and the Windows SDK, then run:
+With Visual Studio 2022 C++ tools and the Windows SDK:
 
 ```powershell
 .\build.ps1 -Test
-.\build\LuminAMI.exe --help
 ```
 
-The executable uses the static C++ runtime. `scripts/package.ps1` builds, tests,
-and creates the release ZIP and SHA256 file. GitHub Actions runs the same checks
-and packages tagged releases.
-
-## Current limits
-
-This is the first public release. BIOS writes can leave a system unable to boot;
-know your board's recovery process before changing settings.
-
-Imports check capture identity, field bounds, available options, numeric ranges,
-variable attributes, and read-only constraints before writing. Writes are
-journaled and read back. A failed transaction attempts rollback, which can also
-fail if the firmware or driver stops responding.
-
-Earlier hardware validation covered NumLock write/readback/restore on one system.
-Other boards, general string/signed writes on hardware, and reboot persistence
-are not verified. Password unlock, authenticated variables, computed fields,
-and unsupported vendor flows are rejected or kept read-only. Windows security
-settings are never changed to load a driver.
-
-Live export was also verified on an ASUS TUF GAMING B650E-E WIFI, BIOS 0215,
-with WSMT protections enabled and no UEFI ACPI table exposed to Windows. The
-driver negotiates and manages that protected interface. This is capability
-detection, with no motherboard-model allowlist; it is not a guarantee for all
-motherboards or non-AMI firmware. See [compatibility](docs/COMPATIBILITY.md).
-
-## Credits
-
-- Billz
-- [Lumin / discord.gg/lumin](https://discord.gg/lumin)
-- [nlohmann/json](https://github.com/nlohmann/json), by Niels Lohmann — MIT
-
-LuminAMI is MIT licensed. AMI's drivers are separate third-party files, and this
-project is not affiliated with AMI.
+Created by **Jayy and Billz**. Community and support: [our Lumin Discord](https://discord.gg/lumin).
+JSON: [nlohmann/json](https://github.com/nlohmann/json), by Niels Lohmann (MIT).
+Original signed drivers: **American Megatrends (AMI)**;
+[driver provenance and credits](drivers/README.md).
+LuminAMI's source is MIT licensed; the third-party drivers aren't relicensed.
+LuminAMI is not affiliated with AMI.

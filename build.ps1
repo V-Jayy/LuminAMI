@@ -21,11 +21,14 @@ try {
     $common = @('/nologo', '/std:c++20', '/EHsc', '/O2', '/MT', '/W4', '/utf-8', '/DUNICODE', '/D_UNICODE', "/I$(Join-Path $luminAmiRoot 'include')", "/external:I$(Join-Path $luminAmiRoot 'third_party')", '/external:W0')
     Push-Location $buildDirectory
     try {
-        & $compiler @common @sources '/Fe:LuminAMI.exe' '/link' 'advapi32.lib' 'bcrypt.lib' 'ole32.lib'
+        $resourceCompiler = Join-Path $sdkRoot "bin\$($sdkVersion.Name)\x64\rc.exe"
+        & $resourceCompiler '/nologo' "/I$(Join-Path $luminAmiRoot 'drivers')" '/fo' 'drivers.res' (Join-Path $luminAmiRoot 'drivers\resources.rc')
+        if ($LASTEXITCODE -ne 0) { throw 'Driver resource build failed.' }
+        & $compiler @common @sources 'drivers.res' '/Fe:LuminAMI.exe' '/link' 'advapi32.lib' 'bcrypt.lib' 'ole32.lib'
         if ($LASTEXITCODE -ne 0) { throw 'LuminAMI build failed.' }
         if ($Test) {
             $librarySources = $sources | Where-Object { (Split-Path -Leaf $_) -ne 'main.cpp' }
-            & $compiler @common @librarySources (Join-Path $luminAmiRoot 'tests\core_tests.cpp') '/Fe:LuminAMI-tests.exe' '/link' 'advapi32.lib' 'bcrypt.lib' 'ole32.lib'
+            & $compiler @common @librarySources (Join-Path $luminAmiRoot 'tests\core_tests.cpp') 'drivers.res' '/Fe:LuminAMI-tests.exe' '/link' 'advapi32.lib' 'bcrypt.lib' 'ole32.lib'
             if ($LASTEXITCODE -ne 0) { throw 'Test build failed.' }
             $testOutput = & (Join-Path $buildDirectory 'LuminAMI-tests.exe')
             if ($LASTEXITCODE -ne 0) { throw 'LuminAMI tests failed.' }
@@ -33,6 +36,7 @@ try {
             $fixtureLine = $testOutput | Where-Object { $_.StartsWith('Fixture artifacts: ') } | Select-Object -First 1
             if (-not $fixtureLine) { throw 'Offline tests did not report their fixture directory.' }
             & (Join-Path $luminAmiRoot 'tests\cli_tests.ps1') -Executable (Join-Path $buildDirectory 'LuminAMI.exe') -Fixtures $fixtureLine.Substring(19)
+            & (Join-Path $luminAmiRoot 'tests\installer_tests.ps1') -Executable (Join-Path $buildDirectory 'LuminAMI.exe') -Fixtures $fixtureLine.Substring(19)
         }
     } finally { Pop-Location }
 } finally { $env:INCLUDE, $env:LIB, $env:PATH = $oldInclude, $oldLib, $oldPath }

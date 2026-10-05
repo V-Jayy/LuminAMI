@@ -3,6 +3,7 @@
 #endif
 #include <Windows.h>
 #include "core.hpp"
+#include "drivers.hpp"
 #include <chrono>
 #include <thread>
 #include <set>
@@ -96,11 +97,7 @@ class AmiSession {
             // including boards whose UEFI ACPI table is not exposed to Windows.
             port_ = static_cast<uint16_t>(status["smi_port"].get<uint32_t>());
             auto bytes = read_file(driver);
-            const auto driver_hash = sha256(bytes);
-            const bool generic =
-                driver_hash == "ffc72f0bde21ba20aa97bee99d9e96870e5aa40cce9884e44c612757f939494f";
-            if (!generic && driver_hash != "e7cbfb16261de1c7f009431d374d90e9eb049ba78246e38bc4c8b9e06f324b6f")
-                throw Error("Driver does not match either researched AMI driver SHA256");
+            const bool generic = std::string(verify_ami_driver(bytes).name) == "amigendrv64.sys";
             if (wsmt_ && !generic)
                 throw Error("WSMT protected transport requires the supported amigendrv64.sys");
             ServiceHandle scm(
