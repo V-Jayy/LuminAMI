@@ -59,4 +59,6 @@ $errorsFile = Join-Path $work 'invalid-options.json'
 Check ($LASTEXITCODE -eq 1) 'Unknown options fail'
 $errorReport = Get-Content -LiteralPath $errorsFile -Raw | ConvertFrom-Json
 Check (-not $errorReport.writes_firmware) 'Invalid command reports no writes'
+# The expected rejection above must not become the build script's final exit status.
+$global:LASTEXITCODE = 0
 Write-Output "PASS: $checks CLI/script checks; no driver was loaded."
