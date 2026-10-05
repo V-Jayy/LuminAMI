@@ -30,6 +30,13 @@ reached 1.19 seconds on SCEWIN; that is not an input-latency measurement.
 
 ![Export benchmark](benchmarks/export.png)
 
+![Scheduling pauses during export](benchmarks/export-latency.png)
+
+The latency chart shows each export's longest observer scheduling gap, with
+medians of 58.0 ms for LuminAMI and 402.6 ms for SCEWIN. The idle controls peaked
+at 11.5 ms. This measures scheduling pauses, not mouse/input latency or isolated
+firmware time; the tools also ran for different durations.
+
 ![Unchanged import benchmark](benchmarks/import.png)
 
 Raw timing/resource samples and hardware details: [results.json](benchmarks/results.json).

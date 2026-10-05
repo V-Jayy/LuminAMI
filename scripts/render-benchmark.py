@@ -84,6 +84,34 @@ def main():
                       fontsize=9, color=SECONDARY)
         fig.savefig(args.output / f"{operation}.png", dpi=180, facecolor=BACKGROUND)
         plt.close(fig)
+    if "export" in summary:
+        fig, ax = plt.subplots(figsize=(7, 2.8), layout="constrained")
+        export_rows = [r for r in measured if r["operation"] == "export"]
+        maximum = max(r["max_sampler_gap_ms"] for r in export_rows)
+        for y, tool in enumerate(("LuminAMI", "SCEWIN")):
+            values = [r["max_sampler_gap_ms"] for r in export_rows if r["tool"] == tool]
+            median = statistics.median(values)
+            ax.barh(y, median, height=.48, color=LUMIN if tool == "LuminAMI" else REFERENCE)
+            ax.scatter(values, [y + (i - (len(values) - 1) / 2) * .022 for i in range(len(values))],
+                       color=TEXT, s=14, zorder=3)
+            ax.text(max(values) + maximum * .025, y, f"{median:.0f} ms", va="center", weight="bold")
+        idle = max(metadata["idle_before"]["MaxSampleGapMs"], metadata["idle_after"]["MaxSampleGapMs"])
+        ax.axvline(idle, color=SECONDARY, linestyle="--", linewidth=1)
+        ax.set_yticks([0, 1], ["LuminAMI", "SCEWIN"])
+        ax.invert_yaxis()
+        ax.set_xlim(0, maximum * 1.2)
+        ax.set_xlabel("Longest scheduling gap per export (ms)", fontsize=10)
+        ax.set_title("Export scheduling pauses", loc="left", fontsize=14, weight="bold", pad=12)
+        ax.spines[["top", "right", "left"]].set_visible(False)
+        ax.spines["bottom"].set_color("#2d2450")
+        ax.tick_params(axis="y", length=0)
+        ax.grid(axis="x", color=GRID, linewidth=.6)
+        ax.set_axisbelow(True)
+        fig.supxlabel(f"Bars: median. Dots: {metadata['runs_per_tool']} runs per tool. Dashed: idle peak {idle:.1f} ms.\n"
+                      f"{metadata['sampler_interval_ms']} ms observer; scheduling gaps, not mouse/input latency. One machine.",
+                      fontsize=9, color=SECONDARY)
+        fig.savefig(args.output / "export-latency.png", dpi=180, facecolor=BACKGROUND)
+        plt.close(fig)
     public = {"metadata": metadata, "measured_runs": measured, "summary": summary,
               "final_verification": verification,
               "notes": ["Import input was an unmodified full current-settings file. LuminAMI skipped unchanged writes.",

@@ -7,6 +7,7 @@
 #include <iostream>
 #include <map>
 #include <cwctype>
+#include <chrono>
 
 namespace {
 using namespace luminami;
@@ -463,12 +464,17 @@ int wmain(int argc, wchar_t** argv) {
                     throw Error("Report output already exists");
             }
             auto duplicate_path = dupes.empty() ? std::filesystem::path{} : path(dupes);
+            auto driver = live ? driver_for_live() : std::filesystem::path{};
+            const auto started = std::chrono::steady_clock::now();
             if (live)
-                result = export_ami(driver_for_live(), capture, script, duplicate_path);
+                result = export_ami(driver, capture, script, duplicate_path);
             else {
                 optional("--non-interactive");
                 result = export_capture(capture, script, duplicate_path);
             }
+            result["elapsed_ms"] =
+                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started)
+                    .count() / 1000.0;
             if (!error_report.empty())
                 write_json(error_report, result);
         } else if (command == "import" || command == "test-import") {

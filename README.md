@@ -34,6 +34,7 @@ Move the `*` to your chosen option, or edit the `Value` for numeric/string
 settings. Keep `BIOSSettings.txt.capture` with the file; imports need that backup.
 `--plan` only checks changes. `-i` applies them, reads them back, and saves a
 unique journal. Existing export files are preserved.
+Export prints `elapsed_ms` so you can see how long that run took, after driver setup.
 
 ```powershell
 # Provided drivers, headless export, or your own supported driver path.
@@ -68,6 +69,11 @@ On an MSI PRO Z790-P WIFI / i9-14900KF, BIOS A.AJ: **1.01 seconds vs 9.91 second
 median export time, about **9.8x faster** than SCEWIN 5.05.01.0002. Ten runs each,
 alternating order, warm-ups excluded. LuminAMI used 0.94 CPU-seconds vs 9.13;
 peak resident RAM was higher at 64.5 MiB vs 38.9 MiB.
+
+![Scheduling pauses during export](docs/benchmarks/export-latency.png)
+
+Median longest scheduling pause per export: **58 ms vs 403 ms**; idle was about
+11.5 ms. These are gaps in a separate 10 ms sampler, not mouse/input latency.
 
 LuminAMI reads HII and unique varstores into a snapshot, then resolves settings
 from that data. Most of the measured CPU-time difference was in kernel work.
