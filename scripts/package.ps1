@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$Version = '0.2.2')
+param([string]$Version = '0.2.3')
 $ErrorActionPreference = 'Stop'
 if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Version must be MAJOR.MINOR.PATCH.' }
 $root = Split-Path -Parent $PSScriptRoot
