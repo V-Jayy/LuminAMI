@@ -34,7 +34,7 @@ Move the `*` to your chosen option, or edit the `Value` for numeric/string
 settings. Keep `BIOSSettings.txt.capture` with the file; imports need that backup.
 `--plan` only checks changes. `-i` applies them, reads them back, and saves a
 unique journal. Existing export files are preserved.
-Export prints `elapsed_ms` so you can see how long that run took, after driver setup.
+Export prints `latency_ms` in the JSON so you can see how long that run took, after driver setup.
 
 ```powershell
 # Provided drivers, headless export, or your own supported driver path.

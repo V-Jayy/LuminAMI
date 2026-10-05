@@ -472,7 +472,7 @@ int wmain(int argc, wchar_t** argv) {
                 optional("--non-interactive");
                 result = export_capture(capture, script, duplicate_path);
             }
-            result["elapsed_ms"] =
+            result["latency_ms"] =
                 std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started)
                     .count() / 1000.0;
             if (!error_report.empty())

@@ -19,7 +19,7 @@ settings from the matching capture and saves a unique
 validates and prints changes offline. Existing output files are never overwritten.
 Use `--capture DIR` if you move or rename the settings file.
 
-Successful exports include numeric `elapsed_ms` in the terminal JSON and live
+Successful exports include numeric `latency_ms` in the terminal JSON and live
 `--report` file. Timing starts after driver selection/setup and includes capture,
 settings rendering, file writes, and driver cleanup. Offline export times only
 rendering from the saved capture. It excludes process startup and report output.

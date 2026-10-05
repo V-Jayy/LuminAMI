@@ -34,7 +34,7 @@ try {
     $shortFile = Join-Path $work 'short settings.txt'
     $shortExport = Invoke-Json @('-e', $shortFile, '--capture', $capture, '--non-interactive')
     Check ($shortExport.ok -and -not $shortExport.writes_firmware) 'Short export uses an explicit offline capture with spaced paths'
-    Check ($shortExport.elapsed_ms -is [ValueType] -and $shortExport.elapsed_ms -ge 0) 'Short export includes numeric elapsed milliseconds in its JSON'
+    Check ($shortExport.latency_ms -is [ValueType] -and $shortExport.latency_ms -ge 0) 'Short export includes numeric latency milliseconds in its JSON'
     Check (Test-Path -LiteralPath ($shortFile + '.dupes.txt')) 'Short export publishes the duplicate file'
     Copy-Item -LiteralPath $capture -Destination ($shortFile + '.capture') -Recurse
     $shortPlan = Invoke-Json @('-i', $shortFile, '--plan')
@@ -58,7 +58,7 @@ try {
     $settings = Join-Path $work 'BIOSSettings.txt'
     $export = Invoke-Json @('/o', '/s', $original, '/sd', (Join-Path $work 'Dupes.txt'), '--capture', $capture)
     Check ($export.ok) 'Lowercase export aliases work with spaced paths'
-    Check ($export.elapsed_ms -is [ValueType] -and $export.elapsed_ms -ge 0) 'SCEWIN-style export also reports elapsed milliseconds'
+    Check ($export.latency_ms -is [ValueType] -and $export.latency_ms -ge 0) 'SCEWIN-style export also reports latency milliseconds'
     $edit = Invoke-Json @('edit', '--script', $original, '--output', $settings, '--token', '1', '--value', '0')
     $shortPlan = Invoke-Json @('-i', $settings, '--capture', $capture, '--plan')
     Check ($shortPlan.patches.Count -eq 1) 'Short plan handles an edited file with an explicit capture'
