@@ -8,6 +8,7 @@ LuminAMI-backup/
 journals/
 capture/
 driver.json
+benchmark-*/
 *.capture/
 *.tmp
 *.sys

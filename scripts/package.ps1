@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$Version = '0.2.1')
+param([string]$Version = '0.2.2')
 $ErrorActionPreference = 'Stop'
 if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Version must be MAJOR.MINOR.PATCH.' }
 $root = Split-Path -Parent $PSScriptRoot
@@ -20,12 +20,13 @@ foreach ($file in @('README.md', 'LICENSE', 'install.ps1', 'Export.cmd', 'Import
 foreach ($directory in @('scripts', 'docs', 'third_party', 'drivers')) {
     New-Item -ItemType Directory -Path (Join-Path $staging $directory) | Out-Null
 }
-foreach ($script in @('common.ps1', 'export.ps1', 'import.ps1', 'restore.ps1', 'menu.ps1', 'install-drivers.ps1')) {
+foreach ($script in @('common.ps1', 'export.ps1', 'import.ps1', 'restore.ps1', 'menu.ps1', 'install-drivers.ps1', 'benchmark.ps1', 'benchmark-metrics.cs', 'render-benchmark.py')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $script) -Destination (Join-Path $staging 'scripts')
 }
-foreach ($doc in @('COMMANDS.md', 'DRIVERS.md', 'SETTINGS.md', 'COMPATIBILITY.md')) {
+foreach ($doc in @('COMMANDS.md', 'DRIVERS.md', 'SETTINGS.md', 'COMPATIBILITY.md', 'BENCHMARK.md')) {
     Copy-Item -LiteralPath (Join-Path $root "docs\$doc") -Destination (Join-Path $staging 'docs')
 }
+Copy-Item -LiteralPath (Join-Path $root 'docs\benchmarks') -Destination (Join-Path $staging 'docs\benchmarks') -Recurse
 Copy-Item -LiteralPath (Join-Path $root 'third_party\LICENSE-json.MIT') -Destination (Join-Path $staging 'third_party')
 Copy-Item -LiteralPath (Join-Path $root 'drivers\README.md') -Destination (Join-Path $staging 'third_party\AMI-DRIVERS.md')
 Copy-Item -LiteralPath (Join-Path $root 'drivers\README.md') -Destination (Join-Path $staging 'drivers\README.md')

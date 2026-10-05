@@ -60,6 +60,25 @@ Read compatibility and write testing are limited; see [compatibility](docs/COMPA
 Use LuminAMI exports with their matching captures, not SCEWIN files.
 [Commands](docs/COMMANDS.md) · [Editing](docs/SETTINGS.md) · [Drivers](docs/DRIVERS.md)
 
+## Export benchmark
+
+![LuminAMI vs SCEWIN export benchmark](docs/benchmarks/export.png)
+
+On an MSI PRO Z790-P WIFI / i9-14900KF, BIOS A.AJ: **1.01 seconds vs 9.91 seconds**
+median export time, about **9.8x faster** than SCEWIN 5.05.01.0002. Ten runs each,
+alternating order, warm-ups excluded. LuminAMI used 0.94 CPU-seconds vs 9.13;
+peak resident RAM was higher at 64.5 MiB vs 38.9 MiB.
+
+LuminAMI reads HII and unique varstores into a snapshot, then resolves settings
+from that data. Most of the measured CPU-time difference was in kernel work.
+That supports the benefit of keeping firmware reads out of the settings loop;
+it does not prove SCEWIN's internal call count or guarantee this speed on every board.
+
+Unchanged full-profile imports measured 0.95 vs 9.58 seconds. LuminAMI skips
+unchanged writes; this is not a changed-settings write benchmark. The final
+import used the starting profile, and all 34 captured varstores matched afterward.
+[Full results, resource counters, and reproducible commands](docs/BENCHMARK.md).
+
 ## Build and credits
 
 With Visual Studio 2022 C++ tools and the Windows SDK:

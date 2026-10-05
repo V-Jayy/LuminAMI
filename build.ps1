@@ -37,6 +37,7 @@ try {
             if (-not $fixtureLine) { throw 'Offline tests did not report their fixture directory.' }
             & (Join-Path $luminAmiRoot 'tests\cli_tests.ps1') -Executable (Join-Path $buildDirectory 'LuminAMI.exe') -Fixtures $fixtureLine.Substring(19)
             & (Join-Path $luminAmiRoot 'tests\installer_tests.ps1') -Executable (Join-Path $buildDirectory 'LuminAMI.exe') -Fixtures $fixtureLine.Substring(19)
+            & (Join-Path $luminAmiRoot 'tests\benchmark_tests.ps1') -Fixtures $fixtureLine.Substring(19)
         }
     } finally { Pop-Location }
 } finally { $env:INCLUDE, $env:LIB, $env:PATH = $oldInclude, $oldLib, $oldPath }

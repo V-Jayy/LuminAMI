@@ -25,7 +25,7 @@ function Invoke-Json {
 $previousConfig = $env:LUMINAMI_CONFIG_DIR
 $env:LUMINAMI_CONFIG_DIR = Join-Path $work 'driver-state'
 try {
-    Check ((& $Executable --version) -eq 'LuminAMI 0.2.1') 'Version is exposed'
+    Check ((& $Executable --version) -eq 'LuminAMI 0.2.2') 'Version is exposed'
     Check (((& $Executable --help) -join "`n") -match 'discord.gg/lumin') 'Help credits Lumin'
     $capture = Join-Path $Fixtures 'cli-capture'
     Check (((& $Executable -h) -join "`n") -match 'Jayy and Billz') 'Short help credits both creators'
