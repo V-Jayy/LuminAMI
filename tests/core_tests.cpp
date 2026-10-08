@@ -699,6 +699,131 @@ int main() {
                                   {"guid", "12345678-1234-5678-9012-123456789012"},
                                   {"data", "010203"},
                                   {"attributes", 7}};
+        {
+            const auto pbs_guid = "a339d746-f678-49b3-9fc7-54ce0f9df226";
+            Json policy = {
+                {"questions",
+                 Json::array(
+                     {{{"name", "AMD Variable Protection"},
+                       {"opcode", 5},
+                       {"width", 1},
+                       {"offset", 1},
+                       {"variable",
+                        {{"kind", "buffer"}, {"name", "AMD_PBS_SETUP"}, {"guid", pbs_guid}, {"size", 3}}},
+                       {"options", Json::array({{{"name", "Disabled"}, {"value", 0}},
+                                                {{"name", "Enabled"}, {"value", 1}}})}}})}};
+            auto plan = Json{
+                {"variables",
+                 Json::array({{{"name", "AmdSetupRPL"}, {"guid", "3a997502-647a-4c82-998e-52ef9486a247"}}})}};
+            Json live = {
+                {"name", "AMD_PBS_SETUP"}, {"guid", pbs_guid}, {"attributes", 7}, {"data", "000100"}};
+            size_t reads = 0, writes = 0;
+            VariableOperations operations{
+                [&](const std::string& name, const std::string& guid) {
+                    check(name == "AMD_PBS_SETUP" && guid == pbs_guid,
+                          "Policy address comes from parsed HII");
+                    ++reads;
+                    return live;
+                },
+                [&](const std::string&, const std::string&, uint32_t, const Bytes&) { ++writes; }};
+            bool blocked = false;
+            try {
+                check_amd_write_policy(policy, plan, operations);
+            } catch (const FirmwareWriteBlocked& e) {
+                blocked = std::string(e.what()).find("reboot") != std::string::npos;
+            }
+            check(blocked && writes == 0, "Enabled AMD policy gives an actionable error before any write");
+            live["data"] = "000000";
+            check_amd_write_policy(policy, plan, operations);
+            check(reads == 2 && writes == 0, "Disabled AMD policy allows normal transaction validation");
+            live["data"] = "000100";
+            auto intel =
+                Json{{"variables",
+                      Json::array({{{"name", "Setup"}, {"guid", "ec87d643-eba4-4bb5-a1e5-3f3e36b20da9"}}})}};
+            check_amd_write_policy(policy, intel, operations);
+            check(reads == 2, "Intel-only writes do not depend on the AMD policy");
+            auto missing = Json{{"questions", Json::array()}};
+            check_amd_write_policy(missing, plan, operations);
+            check(reads == 2, "Firmware without this policy keeps existing transport behavior");
+            live["data"] = "000200";
+            rejects([&] { check_amd_write_policy(policy, plan, operations); },
+                    "Unknown policy value fails closed");
+            live["data"] = "000100";
+            live["guid"] = "12345678-1234-5678-9012-123456789012";
+            rejects([&] { check_amd_write_policy(policy, plan, operations); },
+                    "Policy read identity must match HII");
+            live["guid"] = pbs_guid;
+            live["data"] = "00";
+            rejects([&] { check_amd_write_policy(policy, plan, operations); },
+                    "Truncated policy variable cannot be interpreted");
+            check(writes == 0, "AMD policy checks never alter firmware protection");
+        }
+        {
+            Json nvram = baseline_variable;
+            size_t runtime_writes = 0;
+            VariableOperations ami{[&](const std::string&, const std::string&) { return nvram; }, {}};
+            VariableOperations runtime{ami.read, [&](const std::string& name, const std::string& guid,
+                                                     uint32_t attrs, const Bytes& data) {
+                                           check(name == baseline_variable["name"].get<std::string>() &&
+                                                     guid == baseline_variable["guid"].get<std::string>() &&
+                                                     attrs == 7,
+                                                 "Runtime write preserves variable identity and attributes");
+                                           ++runtime_writes;
+                                           nvram["data"] = hex(data);
+                                       }};
+            write_runtime_fallback(baseline_variable, {0, 2, 3}, ami, runtime);
+            check(nvram["data"] == "000203" && runtime_writes == 1,
+                  "Runtime fallback requires matching AMI and Windows readback");
+            write_runtime_fallback(nvram, {1, 2, 3}, ami, runtime);
+            check(nvram == baseline_variable && runtime_writes == 2,
+                  "Runtime transport restores the complete original variable");
+            nvram["data"] = "090203";
+            rejects([&] { write_runtime_fallback(baseline_variable, {0, 2, 3}, ami, runtime); },
+                    "Partially accepted AMI write cannot trigger a second transport");
+            nvram = baseline_variable;
+            for (const auto& field : {"data", "attributes", "name", "guid"}) {
+                auto disagree = runtime;
+                disagree.read = [&, field](const std::string&, const std::string&) {
+                    auto result = nvram;
+                    result[field] = field == std::string("attributes") ? Json(3) : Json("different");
+                    return result;
+                };
+                rejects([&] { write_runtime_fallback(baseline_variable, {0, 2, 3}, ami, disagree); },
+                        "Runtime baseline disagreement prevents writes");
+            }
+            rejects([&] { write_runtime_fallback(baseline_variable, {}, ami, runtime); },
+                    "Runtime fallback cannot delete a variable");
+            rejects([&] { write_runtime_fallback(baseline_variable, {0, 2}, ami, runtime); },
+                    "Runtime fallback cannot resize a variable");
+            auto authenticated = baseline_variable;
+            authenticated["attributes"] = 0x27;
+            rejects([&] { write_runtime_fallback(authenticated, {0, 2, 3}, ami, runtime); },
+                    "Runtime fallback refuses authenticated variables");
+            check(runtime_writes == 2, "Rejected fallback checks cause no firmware callback");
+            auto rejected = runtime;
+            rejected.write = [](const std::string&, const std::string&, uint32_t, const Bytes&) {
+                throw Error("runtime policy rejection");
+            };
+            rejects([&] { write_runtime_fallback(baseline_variable, {0, 2, 3}, ami, rejected); },
+                    "Runtime firmware rejection is propagated");
+            auto cached = runtime;
+            cached.write = [](const std::string&, const std::string&, uint32_t, const Bytes&) {};
+            cached.read = [&](const std::string&, const std::string&) {
+                auto result = nvram;
+                result["data"] = "000203";
+                return result;
+            };
+            // Baseline is visible before the write, but only the runtime view changes afterwards.
+            size_t cached_reads = 0;
+            cached.read = [&](const std::string&, const std::string&) {
+                auto result = nvram;
+                if (++cached_reads > 1)
+                    result["data"] = "000203";
+                return result;
+            };
+            rejects([&] { write_runtime_fallback(baseline_variable, {0, 2, 3}, ami, cached); },
+                    "Runtime success without AMI NVRAM readback is rejected");
+        }
         Bytes fake = {1, 2, 3};
         size_t writes = 0;
         auto reader = [&] {

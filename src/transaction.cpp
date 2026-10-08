@@ -81,6 +81,69 @@ Bytes read_value(const VariableOperations& operations, const PreparedVariable& p
     return bytes;
 }
 } // namespace
+void check_amd_write_policy(const Json& catalog, const Json& plan, const VariableOperations& operations) {
+    bool amd_write = false;
+    for (const auto& v : plan.at("variables")) {
+        const auto guid = v.at("guid").get<std::string>();
+        // CBS, PBS and AOD stores, identified by vendor GUID rather than CPU or board branding.
+        if (guid == "3a997502-647a-4c82-998e-52ef9486a247" ||
+            guid == "a339d746-f678-49b3-9fc7-54ce0f9df226" || guid == "5ed15dc0-edef-4161-9151-6014c4cc630c")
+            amd_write = true;
+    }
+    if (!amd_write)
+        return;
+    for (const auto& q : catalog.at("questions")) {
+        if (q.value("name", "") != "AMD Variable Protection" || !q.contains("variable") ||
+            q.value("width", 0) != 1 || q.value("opcode", 0) != 5 ||
+            q["variable"].value("kind", "") != "buffer")
+            continue;
+        bool disabled = false, enabled = false;
+        for (const auto& option : q.at("options")) {
+            disabled |= option.value("name", "") == "Disabled" && option.at("value") == 0;
+            enabled |= option.value("name", "") == "Enabled" && option.at("value") == 1;
+        }
+        if (!disabled || !enabled)
+            continue;
+        const auto& store = q.at("variable");
+        const auto name = store.at("name").get<std::string>(), guid = store.at("guid").get<std::string>();
+        const auto live = operations.read(name, guid);
+        if (live.at("name") != name || live.at("guid") != guid || live.at("attributes") != 7)
+            throw Error("AMD protection variable identity or attributes differ");
+        const auto bytes = unhex(live.at("data").get<std::string>());
+        if (bytes.size() != store.at("size").get<size_t>())
+            throw Error("AMD protection variable size differs");
+        const auto value = read_le(bytes, q.at("offset").get<size_t>(), 1);
+        if (value == 1)
+            throw FirmwareWriteBlocked(
+                "AMD Variable Protection is Enabled in BIOS (AMD PBS). Firmware blocks CBS/PBS/AOD "
+                "imports from Windows. Set AMD Variable Protection to Disabled in BIOS, save and "
+                "reboot, then export fresh settings before importing. No BIOS settings were written.");
+        if (value != 0)
+            throw Error("Unknown AMD Variable Protection value; read BIOS again");
+    }
+}
+void write_runtime_fallback(const Json& before, const Bytes& data, const VariableOperations& ami,
+                            const VariableOperations& runtime) {
+    const auto name = before.at("name").get<std::string>(), guid = before.at("guid").get<std::string>();
+    const auto baseline = unhex(before.at("data").get<std::string>());
+    if (name.empty() || before.at("attributes") != 7 || baseline.empty() || data.size() != baseline.size())
+        throw Error("Runtime fallback requires an existing ordinary variable of unchanged size");
+    const auto matches = [&](const Json& current, const Bytes& expected) {
+        return current.at("name") == name && current.at("guid") == guid && current.at("attributes") == 7 &&
+               unhex(current.at("data").get<std::string>()) == expected;
+    };
+    // A rejected AMI request can still have side effects. Leave those to the
+    // existing transaction rollback, rather than trying another write route.
+    if (!matches(ami.read(name, guid), baseline))
+        throw Error("AMI variable changed after the rejected write: " + name);
+    if (!matches(runtime.read(name, guid), baseline))
+        throw Error("Windows and AMI variable baselines disagree: " + name);
+    runtime.write(name, guid, 7, data);
+    // Verify through AMI as well as Windows; a runtime cache is not NVRAM proof.
+    if (!matches(ami.read(name, guid), data) || !matches(runtime.read(name, guid), data))
+        throw Error("Windows UEFI write readback mismatch: " + name);
+}
+
 Json prepare_numlock_restore(const Json& staged, const Json& live) {
     if (staged.at("format") != "luminami-import-journal-v1" || staged.at("stage") != "committed" ||
         staged.at("ok") != true || staged.at("applied") != Json::array({0}) ||

@@ -28,7 +28,7 @@ struct Privilege {
             GetLastError() == ERROR_NOT_ALL_ASSIGNED) {
             CloseHandle(token);
             token = nullptr;
-            throw Error("Firmware reads require an administrator terminal (SeSystemEnvironmentPrivilege)");
+            throw Error("Firmware access requires an administrator terminal (SeSystemEnvironmentPrivilege)");
         }
         adjusted = true;
     }
@@ -157,6 +157,26 @@ Json read_windows_variable(const std::string& name, const std::string& guid) {
     }
     throw Error("UEFI variable exceeds 1 MiB limit");
 }
+void write_windows_variable(const std::string& name, const std::string& guid, uint32_t attributes,
+                            const Bytes& expected, const Bytes& data) {
+    // Only replace an existing ordinary variable. No creation, deletion,
+    // attribute changes, authenticated writes or guessed Windows-only payloads.
+    if (attributes != 7 || expected.empty() || data.size() != expected.size() || data.size() > 1024 * 1024)
+        throw Error("Windows UEFI write requires an existing NV/BS/RT variable of unchanged size");
+    Privilege privilege;
+    const auto current = read_windows_variable(name, guid);
+    if (current.at("attributes") != attributes || unhex(current.at("data").get<std::string>()) != expected)
+        throw Error("Windows UEFI variable changed before write: " + name);
+    auto variable = wide(name), vendor = wide("{" + guid_string(guid_bytes(guid), 0) + "}");
+    if (!SetFirmwareEnvironmentVariableExW(variable.c_str(), vendor.c_str(),
+                                           const_cast<uint8_t*>(data.data()), static_cast<DWORD>(data.size()),
+                                           attributes)) {
+        const auto error = GetLastError();
+        throw Error("Windows UEFI write rejected for " + name + " (Windows error " + std::to_string(error) +
+                    ")");
+    }
+}
+
 Json enumerate_windows_variables() {
     Privilege privilege;
     using Enumerate = LONG(NTAPI*)(ULONG, void*, ULONG*);

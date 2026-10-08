@@ -13,6 +13,9 @@ using Bytes = std::vector<uint8_t>;
 struct Error : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
+struct FirmwareWriteBlocked : Error {
+    using Error::Error;
+};
 Bytes read_file(const std::filesystem::path& path);
 void write_file(const std::filesystem::path& path, const Bytes& bytes, bool replace = false);
 void write_json(const std::filesystem::path& path, const Json& value, bool replace = false);
@@ -36,6 +39,8 @@ void edit_script(const std::filesystem::path& input, const std::filesystem::path
 Json probe_windows();
 std::string windows_boot_identifier();
 Json read_windows_variable(const std::string& name, const std::string& guid);
+void write_windows_variable(const std::string& name, const std::string& guid, uint32_t attributes,
+                            const Bytes& expected, const Bytes& data);
 Json enumerate_windows_variables();
 Json diagnose_windows();
 
@@ -84,6 +89,9 @@ struct VariableOperations {
     std::function<Json(const std::string&, const std::string&)> read;
     std::function<void(const std::string&, const std::string&, uint32_t, const Bytes&)> write;
 };
+void check_amd_write_policy(const Json& catalog, const Json& plan, const VariableOperations& operations);
+void write_runtime_fallback(const Json& before, const Bytes& data, const VariableOperations& ami,
+                            const VariableOperations& runtime);
 Json execute_import(const Json& plan, const std::filesystem::path& journal,
                     const VariableOperations& operations, bool restore_after = false);
 Json test_roundtrip(const std::filesystem::path& capture, const std::filesystem::path& script,

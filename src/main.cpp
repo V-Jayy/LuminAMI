@@ -555,7 +555,7 @@ int wmain(int argc, wchar_t** argv) {
         return 0;
     } catch (const std::exception& error) {
         auto report = luminami::Json({{"ok", false}, {"error", error.what()}});
-        if (possible_firmware_write)
+        if (possible_firmware_write && !dynamic_cast<const luminami::FirmwareWriteBlocked*>(&error))
             report["firmware_writes_may_have_occurred"] = true;
         else
             report["writes_firmware"] = false;

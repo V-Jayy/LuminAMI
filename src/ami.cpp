@@ -33,6 +33,7 @@ class AmiSession {
     bool owns_service_ = false;
     bool wsmt_ = false;
     uint32_t driver_version_ = 0;
+    std::set<std::string> runtime_written_;
     static bool mapped(uint8_t* address, size_t length) {
         MEMORY_BASIC_INFORMATION info{};
         if (!VirtualQuery(address, &info, sizeof(info)) || info.State != MEM_COMMIT ||
@@ -180,7 +181,9 @@ class AmiSession {
         return {{"mode", wsmt_ ? "wsmt-driver-managed" : "unprotected-ami"},
                 {"driver_version", driver_version_},
                 {"buffer_capacity", capacity_},
-                {"negotiated", true}};
+                {"negotiated", true},
+                {"variable_write_transport", runtime_written_.empty() ? "ami-smi" : "ami-smi+windows-uefi"},
+                {"windows_uefi_variables", runtime_written_}};
     }
     Bytes invoke(Bytes packet, size_t header_offset = 0) {
         if (packet.size() > capacity_ || packet.size() < header_offset + 0x30)
@@ -219,8 +222,29 @@ class AmiSession {
         throw Error("AMI variable changed size repeatedly");
     }
     void set(const std::string& name, const std::string& guid, uint32_t attributes, const Bytes& data) {
+        const auto before = variable(name, guid);
         auto packet = invoke(protocol::set_variable(physical_, name, guid, attributes, data));
         auto status = (read_le(packet, 0, 4) & 0xff00) >> 8;
+        if (status == 0x9a) {
+            // AMI's SMI write service and UEFI Runtime Services have independent
+            // access policies on some boards. Try the documented OS service only
+            // when both readers confirm the exact unchanged ordinary variable.
+            try {
+                write_runtime_fallback(
+                    before, data,
+                    {[&](const std::string& n, const std::string& g) { return variable(n, g); }, {}},
+                    {read_windows_variable,
+                     [&](const std::string& n, const std::string& g, uint32_t a, const Bytes& d) {
+                         write_windows_variable(n, g, a, unhex(before.at("data").get<std::string>()), d);
+                     }});
+                runtime_written_.insert(guid + ":" + name);
+                return;
+            } catch (const std::exception& e) {
+                throw FirmwareError("AMI SetVariable rejected for " + name +
+                                        " (EFI_SECURITY_VIOLATION, firmware status 154 / 0x9A); " + e.what(),
+                                    0x9a);
+            }
+        }
         if (status)
             throw FirmwareError("AMI SetVariable failed for " + name + " (firmware status " +
                                     std::to_string(status) + ")",
@@ -322,14 +346,17 @@ Json apply_ami(const std::filesystem::path& driver, const std::filesystem::path&
         current.at("smbios_sha256") != plan.at("platform").at("smbios_sha256"))
         throw Error("Live hardware identity differs from the export");
     AmiSession session(driver);
-    if (sha256(session.hii()) != plan.at("hii_sha256").get<std::string>())
+    const auto live_hii = session.hii();
+    if (sha256(live_hii) != plan.at("hii_sha256").get<std::string>())
         throw Error("Live HII changed since export; read BIOS again before importing");
     VariableOperations operations{
         [&](const std::string& n, const std::string& g) { return session.variable(n, g); },
         [&](const std::string& n, const std::string& g, uint32_t attributes, const Bytes& data) {
             session.set(n, g, attributes, data);
         }};
+    check_amd_write_policy(inspect_hii(live_hii), plan, operations);
     auto receipt = execute_import(plan, journal, operations, restore_after);
+    receipt["transport"] = session.transport();
     receipt["writes_firmware"] = !plan.at("variables").empty();
     receipt["changed_fields"] = plan.at("patches").size();
     receipt["hardware_readback_verified"] = true;
@@ -339,6 +366,7 @@ Json apply_ami(const std::filesystem::path& driver, const std::filesystem::path&
             {"changed_fields", receipt["changed_fields"]},
             {"hardware_readback_verified", true},
             {"restored_verified", restore_after},
+            {"transport", session.transport()},
             {"journal", utf8(journal.wstring())}};
 }
 Json restore_ami(const std::filesystem::path& driver, const std::filesystem::path& target_capture,

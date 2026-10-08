@@ -36,6 +36,11 @@ settings. Keep `BIOSSettings.txt.capture` with the file; imports need that backu
 unique journal. Existing export files are preserved.
 Export prints `latency_ms` in the JSON so you can see how long that run took, after driver setup.
 
+If an AMD import reports **AMD Variable Protection is Enabled**, change that
+option in the BIOS **AMD PBS** menu, save and reboot, then export again before
+importing. This is a firmware runtime write restriction; exports can work while
+imports are blocked. See [AMD write protection](docs/COMPATIBILITY.md#amd-firmware-write-protection).
+
 ```powershell
 # Provided drivers, headless export, or your own supported driver path.
 LuminAMI install-drivers

@@ -47,7 +47,47 @@ Export comparison does not validate BIOS writes, reboot persistence, every
 setting type, or other motherboard firmware. Earlier NumLock validation remains
 limited to the previously tested system.
 
+## AMD firmware write protection
+
+AMD boards can publish readable HII and variables while rejecting imports.
+On October 8, 2026, the ASUS TUF GAMING B650E-E WIFI, BIOS 0215, exported
+`AMD Variable Protection` as **Enabled**. The firmware's HII help says this
+protects CBS, PBS and AOD variables against runtime modification.
+An `AmdSetupRPL` import returned AMI status `154` (`0x9A`, security violation).
+Windows UEFI Runtime Services read the identical baseline but also rejected
+the write with Windows error `5` (access denied). The recovery journal verified
+that the complete original variable remained intact.
+
+Live imports now inspect the verified HII and read the current protection
+setting before writing any variable. If it is enabled, the import stops with
+the specific BIOS setting and reboot instructions. This applies to mixed
+imports too, so earlier writable settings are not changed before discovering
+the AMD lock. Intel-only imports and firmware without this HII setting retain
+their existing behavior. LuminAMI does not change the protection setting.
+
+To allow these imports, set **AMD Variable Protection** to **Disabled** in your
+board's **AMD PBS** BIOS menu, save and reboot. Export fresh settings afterward.
+This reduces the firmware's runtime variable protection; restore the setting
+after making your intended changes if you want that protection enabled again.
+A disabled setting is not proof that every other firmware policy allows writes.
+The rebuilt CLI and LuminApp native addon both detected the enabled policy on
+this board before starting a transaction. Complete post-test `AmdSetupRPL`
+readback matched the original 2,016-byte baseline. A successful import after
+changing the BIOS protection option still needs validation following a reboot.
+
+For AMI `0x9A` rejections without a detected AMD lock, LuminAMI can try the
+documented Windows UEFI variable service. This requires matching complete AMI
+and Windows baselines, an existing NV/BS/RT variable, unchanged size and
+attributes, and readback through both interfaces. Failures retain transaction
+rollback. This fallback does not override firmware access policy; successful
+fallback writes on other firmware have not yet been hardware-validated.
+
 ## Regression coverage
+
+Offline tests cover AMD protection enabled, disabled, absent, malformed and
+irrelevant to Intel writes, as well as runtime baseline disagreement, identity
+and attribute changes, deletion/resize refusal, firmware rejection, readback
+mismatch and complete restoration. All normal build tests remain offline.
 
 Offline tests cover negotiation without a published ACPI context, matching and
 conflicting published contexts, opaque template state, truncated packets, port
