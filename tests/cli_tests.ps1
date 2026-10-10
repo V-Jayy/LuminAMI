@@ -22,6 +22,31 @@ function Invoke-Json {
     return ($output -join "`n" | ConvertFrom-Json)
 }
 
+# Runs the executable with all three streams captured as raw text. Works the same in Windows PowerShell 5.1 and pwsh,
+# where a native command's stderr redirected with 2> can otherwise turn into an error record.
+function Invoke-Raw {
+    param([string[]]$Arguments, [byte[]]$StdIn = @(), [string]$ErrorFile)
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = $Executable
+    $info.Arguments = ($Arguments | ForEach-Object { if ($_ -match '[\s"]' -or $_ -eq '') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ } }) -join ' '
+    $info.UseShellExecute = $false
+    $info.RedirectStandardInput = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $info.CreateNoWindow = $true
+    $process = [System.Diagnostics.Process]::Start($info)
+    if ($StdIn.Length) { $process.StandardInput.BaseStream.Write($StdIn, 0, $StdIn.Length); $process.StandardInput.BaseStream.Flush() }
+    $process.StandardInput.Close()
+    $outTask = $process.StandardOutput.ReadToEndAsync()
+    $errTask = $process.StandardError.ReadToEndAsync()
+    $process.WaitForExit()
+    $result = [pscustomobject]@{ ExitCode = $process.ExitCode; Out = $outTask.Result; Err = $errTask.Result }
+    if ($ErrorFile) { [System.IO.File]::WriteAllText($ErrorFile, $result.Err) }
+    $global:LASTEXITCODE = $result.ExitCode
+    return $result
+}
+function Ascii { param([string]$Text) [System.Text.Encoding]::ASCII.GetBytes($Text) }
+
 $previousConfig = $env:LUMINAMI_CONFIG_DIR
 $env:LUMINAMI_CONFIG_DIR = Join-Path $work 'driver-state'
 try {
@@ -41,15 +66,46 @@ try {
     Check ($shortPlan.patches.Count -eq 0) 'Short plan resolves the matching sidecar capture without writing'
     $secret = 'test-password-that-must-not-be-logged'
     $passwordError = Join-Path $work 'password-error.json'
-    & $Executable -e (Join-Path $work 'protected.txt') -p $secret 2> $passwordError | Out-Null
-    Check ($LASTEXITCODE -eq 1) 'Unsupported password authentication fails'
+    $null = Invoke-Raw -Arguments @('-e', (Join-Path $work 'protected.txt'), '-p', $secret) -ErrorFile $passwordError
+    Check ($LASTEXITCODE -eq 1) 'A password given as a command-line value fails'
     $passwordText = Get-Content -LiteralPath $passwordError -Raw
     Check ($passwordText -notmatch [regex]::Escape($secret)) 'Password is never included in the error'
     Check (-not (Test-Path -LiteralPath $env:LUMINAMI_CONFIG_DIR)) 'Password rejection has no setup side effects'
+    Check ($passwordText -match '--ask-password' -and $passwordText -match '--password-stdin') 'The refusal names the safe channels'
+
+    # The BIOS password channels. None of these may reach a driver, and none may echo what was typed.
+    $secretLine = 'Zq7!hunter-Tw9'
+    $newCapture = Join-Path $work 'pw-new-capture'
+    $newScript = Join-Path $work 'pw-new-settings.txt'
+    $stdinCases = @(
+        @{ Name = 'an over-long password from stdin is refused before any driver'; Args = @('export', '--capture', $newCapture, '--script', $newScript, '--password-stdin', '--non-interactive'); In = (Ascii ('Q9' * 40)); Match = 'not used' },
+        @{ Name = 'a non-ASCII password from stdin is refused before any driver'; Args = @('export', '--capture', $newCapture, '--script', $newScript, '--password-stdin', '--non-interactive'); In = ([byte[]](0x70, 0xC3, 0xA4, 0x73, 0x73, 0x77, 0x6F, 0x72, 0x64, 0x31, 0x0A)); Match = 'not used' },
+        @{ Name = 'an empty stdin line is refused'; Args = @('export', '--capture', $newCapture, '--script', $newScript, '--password-stdin', '--non-interactive'); In = (Ascii "`n"); Match = 'empty line' },
+        @{ Name = 'two password channels at once are refused'; Args = @('export', '--capture', $newCapture, '--script', $newScript, '--password-stdin', '--ask-password', '--non-interactive'); In = (Ascii "$secretLine`n"); Match = 'not both' },
+        @{ Name = '--ask-password without a terminal is refused'; Args = @('export', '--capture', $newCapture, '--script', $newScript, '--ask-password', '--non-interactive'); In = (Ascii "$secretLine`n"); Match = 'interactive terminal' },
+        @{ Name = 'an offline export takes no password'; Args = @('export', '--capture', $capture, '--script', (Join-Path $work 'pw-offline.txt'), '--password-stdin'); In = (Ascii "$secretLine`n"); Match = 'reads no firmware' },
+        @{ Name = 'an offline import plan takes no password'; Args = @('import', '--capture', $capture, '--script', (Join-Path $work 'BIOSSettings.txt'), '--password-stdin'); In = (Ascii "$secretLine`n"); Match = 'requires --journal' },
+        @{ Name = 'SCEWIN /CPWD syntax is refused'; Args = @('import', '/CPWD', $secretLine); In = @(); Match = 'never a command-line value' },
+        @{ Name = 'a command that never reads firmware has no password option'; Args = @('probe', '--password-stdin'); In = (Ascii "$secretLine`n"); Match = 'Unknown option' }
+    )
+    foreach ($case in $stdinCases) {
+        $run = Invoke-Raw -Arguments $case.Args -StdIn $case.In
+        Check ($run.ExitCode -eq 1) "Password channel: $($case.Name)"
+        Check ($run.Err -match $case.Match) "Password channel message is clear: $($case.Name)"
+        Check (($run.Out + $run.Err) -notmatch [regex]::Escape($secretLine) -and ($run.Out + $run.Err) -notmatch 'Q9Q9') "Password channel never echoes the password: $($case.Name)"
+        Check (-not (Test-Path -LiteralPath $env:LUMINAMI_CONFIG_DIR) -and -not (Test-Path -LiteralPath $newCapture)) "Password channel has no driver or capture side effects: $($case.Name)"
+    }
+    $env:LUMINAMI_BIOS_PASSWORD = $secretLine
+    try {
+        $viaEnvironment = Invoke-Raw -Arguments @('export', '--capture', (Join-Path $work 'env-new-capture'), '--script', (Join-Path $work 'env-new.txt'), '--non-interactive')
+        Check ($viaEnvironment.ExitCode -eq 1 -and ($viaEnvironment.Out + $viaEnvironment.Err) -notmatch [regex]::Escape($secretLine)) 'An environment variable is not a password channel and is never echoed'
+    } finally { Remove-Item Env:LUMINAMI_BIOS_PASSWORD -ErrorAction SilentlyContinue }
+    $helpText = ((& $Executable ami help) + (& $Executable -h)) -join "`n"
+    Check ($helpText -match 'ask-password' -and $helpText -match 'password-stdin' -and $helpText -notmatch 'LUMINAMI_BIOS_PASSWORD') 'Help documents only the safe password channels'
     $invalidShort = Join-Path $work 'invalid-short.json'
-    & $Executable -i (Join-Path $work 'missing.txt') --non-interactive --install-drivers 2> $invalidShort | Out-Null
+    $null = Invoke-Raw -Arguments @('-i', (Join-Path $work 'missing.txt'), '--non-interactive', '--install-drivers') -ErrorFile $invalidShort
     Check ($LASTEXITCODE -eq 1 -and -not (Test-Path -LiteralPath $env:LUMINAMI_CONFIG_DIR)) 'Invalid short import fails before driver installation'
-    & $Executable -i $shortFile --non-interactive 2> $invalidShort | Out-Null
+    $null = Invoke-Raw -Arguments @('-i', $shortFile, '--non-interactive') -ErrorFile $invalidShort
     Check ($LASTEXITCODE -eq 1) 'Short live import requires a configured driver'
     Check (@(Get-ChildItem -LiteralPath $work -Filter '*.import-*.json' | Where-Object Name -NotLike '*.result.json').Count -eq 0) 'No journal happens before driver selection'
     $failedShort = Get-ChildItem -LiteralPath $work -Filter '*.import-*.json.result.json' | Select-Object -First 1
@@ -85,16 +141,25 @@ try {
     catch { $rejected = $_.Exception.Message -match 'No verified AMI driver' }
     Check $rejected 'Applying without a driver fails before writing'
     $rejected = $false
+    try { & (Join-Path $root 'scripts\import.ps1') -Workspace $work -AskPassword -Executable $Executable | Out-Null }
+    catch { $rejected = $_.Exception.Message -match 'applies to -Apply' }
+    Check $rejected 'The import shortcut accepts -AskPassword only when applying'
+    foreach ($name in 'export', 'import', 'restore', 'menu') {
+        $tokens = $null; $parseErrors = $null
+        $tree = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root "scripts\$name.ps1"), [ref]$tokens, [ref]$parseErrors)
+        Check ($parseErrors.Count -eq 0 -and $tree.ParamBlock.Parameters.Name.VariablePath.UserPath -contains 'AskPassword') "$name.ps1 parses and offers -AskPassword"
+    }
+    $rejected = $false
     try { & (Join-Path $root 'scripts\export.ps1') -Workspace $work -Driver $Executable -Executable $Executable | Out-Null }
     catch { $rejected = $_.Exception.Message -match 'already exists' }
     Check $rejected 'Export refuses an existing workspace before driver use'
     $errorsFile = Join-Path $work 'invalid-options.json'
-    & $Executable import --capture $capture --script $settings --typo value 2> $errorsFile | Out-Null
+    $null = Invoke-Raw -Arguments @('import', '--capture', $capture, '--script', $settings, '--typo', 'value') -ErrorFile $errorsFile
     Check ($LASTEXITCODE -eq 1) 'Unknown options fail'
     $errorReport = Get-Content -LiteralPath $errorsFile -Raw | ConvertFrom-Json
     Check (-not $errorReport.writes_firmware) 'Invalid command reports no writes'
     $missing = Join-Path $work 'missing-driver.json'
-    & $Executable export --capture (Join-Path $work 'new-capture') --script (Join-Path $work 'new-settings.txt') --non-interactive 2> $missing | Out-Null
+    $null = Invoke-Raw -Arguments @('export', '--capture', (Join-Path $work 'new-capture'), '--script', (Join-Path $work 'new-settings.txt'), '--non-interactive') -ErrorFile $missing
     Check ($LASTEXITCODE -eq 1) 'Headless export fails promptly when no driver is selected'
     Check (-not (Test-Path -LiteralPath (Join-Path $env:LUMINAMI_CONFIG_DIR 'driver.json'))) 'Missing-driver export does not install silently'
     $cache = Join-Path $work 'installed drivers'

@@ -5,6 +5,9 @@ param(
     [string]$Driver,
     [switch]$InstallDrivers,
     [switch]$NonInteractive,
+    # Only for a board that asks for the BIOS administrator password you set in BIOS setup. LuminAMI itself shows a hidden
+    # prompt (nothing is echoed or passed through this script); see docs/PASSWORD.md.
+    [switch]$AskPassword,
     [switch]$Apply,
     [string]$Executable
 )
@@ -16,6 +19,7 @@ $original = Join-Path $Workspace 'OriginalSettings.txt'
 foreach ($required in @($Script, $original, (Join-Path $capture 'capture.json'), (Join-Path $capture 'hii.bin'))) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Backup or settings file is missing: $required" }
 }
+if ($AskPassword -and -not $Apply) { throw '-AskPassword applies to -Apply. Offline planning reads no firmware.' }
 if ($InstallDrivers -and -not $Apply) { throw '-InstallDrivers requires -Apply on import. Offline planning needs no driver.' }
 Invoke-LuminAmi $exe @('diff', '--before', $original, '--after', $Script)
 $runId = Get-LuminAmiRunId
@@ -28,9 +32,11 @@ if (-not $Apply) {
 }
 $journal = Join-Path $Workspace "import-$runId.json"
 $selectedDriver = Get-LuminAmiDriver -Executable $exe -Driver $Driver -InstallDrivers:$InstallDrivers -NonInteractive:$NonInteractive
-Invoke-LuminAmi $exe @(
+$arguments = @(
     'import', '--driver', $selectedDriver, '--non-interactive',
     '--capture', $capture, '--script', $Script, '--journal', $journal,
     '--report', (Join-Path $Workspace "import-$runId-result.json")
 )
+if ($AskPassword) { $arguments += '--ask-password' }
+Invoke-LuminAmi $exe $arguments
 Write-Host "Import finished. Journal: $journal"

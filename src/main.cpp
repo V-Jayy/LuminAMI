@@ -34,6 +34,9 @@ Made by Jayy and Billz | discord.gg/lumin
 
 Export/import options: --capture DIR, --driver PATH, --install-drivers,
 --non-interactive. A saved driver is reused from any directory.
+Only if your board asks for the BIOS administrator password you set in BIOS
+setup: --ask-password (hidden prompt) or --password-stdin. It is never a
+command-line value. See docs/PASSWORD.md.
 -p <password> is reserved for the existing BIOS password; authentication is
 currently unsupported and returns an error without logging the password.
 Live export/import need an administrator terminal. Import writes firmware.
@@ -96,6 +99,78 @@ Json launch_install(const std::filesystem::path& directory, bool no_path) {
             {"log", utf8(log.wstring())},
             {"writes_firmware", false}};
 }
+// The BIOS administrator password is accepted only through channels another
+// process cannot read off a command line or a process list:
+//   --ask-password    a hidden prompt on an interactive console (echo off)
+//   --password-stdin  the first line of redirected standard input
+// A command-line value is refused (see "-p" below), and so is an environment
+// variable: the environment is inherited by every child process and copied by
+// diagnostic tools, so it would widen exposure for no gain. Whichever channel is
+// used, the bytes go straight into a SecretBytes and the temporaries are wiped.
+SecretBytes prompt_bios_password() {
+    HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD mode = 0;
+    if (!GetConsoleMode(input, &mode))
+        throw Error("--ask-password needs an interactive terminal; use --password-stdin for a script");
+    SetConsoleMode(input, (mode & ~ENABLE_ECHO_INPUT) | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT);
+    std::cerr << "BIOS administrator password (the one you set in BIOS setup; input is hidden): ";
+    std::wstring text(1024, L'\0');
+    DWORD count = 0;
+    const bool ok = ReadConsoleW(input, text.data(), static_cast<DWORD>(text.size()), &count, nullptr);
+    SetConsoleMode(input, mode);
+    std::cerr << "\n";
+    if (!ok) {
+        SecureZeroMemory(text.data(), text.size() * sizeof(wchar_t));
+        throw Error("Could not read the BIOS password from the terminal");
+    }
+    text.resize(count);
+    while (!text.empty() && (text.back() == L'\r' || text.back() == L'\n'))
+        text.pop_back();
+    auto narrow = utf8(text);
+    SecureZeroMemory(text.data(), text.size() * sizeof(wchar_t));
+    return secret_from_utf8(narrow);
+}
+SecretBytes stdin_bios_password() {
+    HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD mode = 0;
+    if (input == INVALID_HANDLE_VALUE || input == nullptr || GetConsoleMode(input, &mode))
+        throw Error("--password-stdin needs redirected input, for example: "
+                    "'password' | LuminAMI export ... --password-stdin. At a terminal use --ask-password");
+    Bytes line;
+    uint8_t chunk[256];
+    DWORD got = 0;
+    bool finished = false;
+    // Read only as much as one line can need; a longer line is cut and then refused as too long.
+    while (!finished && line.size() <= 1024 && ReadFile(input, chunk, sizeof(chunk), &got, nullptr) && got) {
+        for (DWORD i = 0; i < got; ++i) {
+            if (chunk[i] == '\n') {
+                finished = true;
+                break;
+            }
+            line.push_back(chunk[i]);
+        }
+    }
+    secure_zero(chunk, sizeof(chunk));
+    while (!line.empty() && line.back() == '\r')
+        line.pop_back();
+    if (line.size() >= 3 && line[0] == 0xef && line[1] == 0xbb && line[2] == 0xbf)
+        line.erase(line.begin(), line.begin() + 3);
+    if (line.empty())
+        throw Error("--password-stdin read an empty line; nothing was sent to the firmware");
+    return SecretBytes(std::move(line));
+}
+SecretBytes acquire_bios_password(bool ask, bool from_stdin) {
+    if (ask && from_stdin)
+        throw Error("Use either --ask-password or --password-stdin, not both");
+    SecretBytes password;
+    if (ask)
+        password = prompt_bios_password();
+    else if (from_stdin)
+        password = stdin_bios_password();
+    // Refuse an unusable password now, before a driver is selected or loaded.
+    validate_setup_password(password);
+    return password;
+}
 std::wstring read_console_line() {
     std::wstring text(32768, L'\0');
     DWORD count = 0;
@@ -135,6 +210,7 @@ EXPORT AND IMPORT
   LuminAMI import --capture DIR --script edited.txt --journal PATH [--driver PATH] [--report PATH]
   LuminAMI test-import --capture DIR --script edited.txt --journal PATH [--driver PATH] [--report PATH]
   LuminAMI restore --capture BACKUP-DIR --journal PATH [--driver PATH] [--report PATH]
+  (capture-ami, export, import, test-import, restore) [--ask-password | --password-stdin]
 
 HARDWARE VALIDATION (writes firmware)
   LuminAMI test-roundtrip --capture DIR --script numlock-off.txt --driver PATH --journal PATH [--report PATH]
@@ -151,7 +227,14 @@ selects live import with the saved driver. It validates, writes, reads back, and
 attempts rollback on failure. An explicit --driver takes priority and is saved.
 test-import writes and immediately restores. The NumLock validation commands are
 for a reviewed one-byte test; stage-numlock-test leaves that change for a reboot.
-Password unlock and authenticated-variable writes are unsupported.
+
+BIOS ADMINISTRATOR PASSWORD (optional; only for a board that asks for it)
+--ask-password reads it at a hidden prompt; --password-stdin reads the first line
+of redirected input. Never a command-line value. It is submitted at most once per
+command, never retried, never stored, and never printed. LuminAMI does not set,
+change or clear a BIOS password. This build recognises a board's request for the
+password and handles it safely, but cannot yet submit one to real firmware; it
+says so rather than guess. See docs/PASSWORD.md.
 
 Export to a new capture uses the saved driver, or offers provided/custom drivers
 in an interactive terminal. --install-drivers extracts provided drivers without
@@ -204,8 +287,9 @@ int wmain(int argc, wchar_t** argv) {
         for (int i = short_command ? 3 : 2; i < argc; ++i) {
             auto key = utf8(argv[i]);
             if (key == "-p")
-                throw Error(
-                    "BIOS password authentication (-p <password>) is not supported by this transport");
+                throw Error("A BIOS password is never accepted as a command-line value: it would be visible "
+                            "to other programs in the process list. Use --ask-password (hidden prompt) or "
+                            "--password-stdin. See docs/PASSWORD.md.");
             if (key == "--plan" && short_import) {
                 if (!args.emplace(key, "true").second)
                     throw Error("Repeated option: --plan");
@@ -216,9 +300,11 @@ int wmain(int argc, wchar_t** argv) {
             if (key == "/SD" || key == "/sd")
                 key = "--dupes";
             if (key == "/CPWD" || key == "/cpwd" || key == "--apply")
-                throw Error("Use import --driver --journal for ordinary firmware writes; password unlock is "
-                            "unsupported");
-            if (key == "--non-interactive" || key == "--install-drivers" || key == "--no-path") {
+                throw Error("Use import --driver --journal for ordinary firmware writes. A BIOS password is "
+                            "never a command-line value: use --ask-password or --password-stdin "
+                            "(docs/PASSWORD.md)");
+            if (key == "--non-interactive" || key == "--install-drivers" || key == "--no-path" ||
+                key == "--ask-password" || key == "--password-stdin") {
                 if (!args.emplace(key, "true").second)
                     throw Error("Repeated option: " + key);
                 continue;
@@ -273,6 +359,11 @@ int wmain(int argc, wchar_t** argv) {
               "stage-numlock-test", "finish-numlock-test", "restore-numlock-test"}) {
             allowed.at(live).push_back("--install-drivers");
             allowed.at(live).push_back("--non-interactive");
+        }
+        // The BIOS password options exist only where firmware is read or written with a password.
+        for (const auto* protected_command : {"capture-ami", "export", "import", "test-import", "restore"}) {
+            allowed.at(protected_command).push_back("--ask-password");
+            allowed.at(protected_command).push_back("--password-stdin");
         }
         auto choices = allowed.find(command);
         if (choices == allowed.end())
@@ -446,8 +537,10 @@ int wmain(int argc, wchar_t** argv) {
             if (!report.empty())
                 error_report = path(report);
             auto destination = path(require("--output"));
+            auto password = acquire_bios_password(!optional("--ask-password").empty(),
+                                                  !optional("--password-stdin").empty());
             auto driver = driver_for_live();
-            result = capture_ami(driver, destination);
+            result = capture_ami(driver, destination, std::move(password));
             if (!error_report.empty())
                 write_json(error_report, result);
         } else if (command == "export") {
@@ -464,10 +557,16 @@ int wmain(int argc, wchar_t** argv) {
                     throw Error("Report output already exists");
             }
             auto duplicate_path = dupes.empty() ? std::filesystem::path{} : path(dupes);
+            const bool ask_password = !optional("--ask-password").empty();
+            const bool stdin_password = !optional("--password-stdin").empty();
+            if (!live && (ask_password || stdin_password))
+                throw Error("An offline export reads no firmware, so it takes no BIOS password");
+            // Read the password (and refuse an unusable one) before any driver is touched.
+            auto password = live ? acquire_bios_password(ask_password, stdin_password) : SecretBytes{};
             auto driver = live ? driver_for_live() : std::filesystem::path{};
             const auto started = std::chrono::steady_clock::now();
             if (live)
-                result = export_ami(driver, capture, script, duplicate_path);
+                result = export_ami(driver, capture, script, duplicate_path, std::move(password));
             else {
                 optional("--non-interactive");
                 result = export_capture(capture, script, duplicate_path);
@@ -482,7 +581,8 @@ int wmain(int argc, wchar_t** argv) {
             auto capture = path(require("--capture")), script = path(require("--script"));
             bool live = command == "test-import" || args.contains("--driver") || args.contains("--journal");
             if (!live) {
-                if (args.contains("--install-drivers") || args.contains("--report"))
+                if (args.contains("--install-drivers") || args.contains("--report") ||
+                    args.contains("--ask-password") || args.contains("--password-stdin"))
                     throw Error("Live import requires --journal");
                 optional("--non-interactive");
                 result = plan_import(capture, script);
@@ -493,9 +593,12 @@ int wmain(int argc, wchar_t** argv) {
                 auto report = optional("--report");
                 if (!report.empty())
                     error_report = path(report);
+                auto password = acquire_bios_password(!optional("--ask-password").empty(),
+                                                      !optional("--password-stdin").empty());
                 auto driver = driver_for_live();
                 possible_firmware_write = true;
-                result = apply_ami(driver, capture, script, journal, command == "test-import");
+                result = apply_ami(driver, capture, script, journal, command == "test-import",
+                                   std::move(password));
                 if (!error_report.empty())
                     write_json(error_report, result);
             }
@@ -504,9 +607,11 @@ int wmain(int argc, wchar_t** argv) {
             auto report = optional("--report");
             if (!report.empty())
                 error_report = path(report);
+            auto password = acquire_bios_password(!optional("--ask-password").empty(),
+                                                  !optional("--password-stdin").empty());
             auto driver = driver_for_live();
             possible_firmware_write = true;
-            result = restore_ami(driver, capture, journal);
+            result = restore_ami(driver, capture, journal, std::move(password));
             if (!error_report.empty())
                 write_json(error_report, result);
         } else if (command == "test-roundtrip" || command == "stage-numlock-test") {
@@ -555,6 +660,16 @@ int wmain(int argc, wchar_t** argv) {
         return 0;
     } catch (const std::exception& error) {
         auto report = luminami::Json({{"ok", false}, {"error", error.what()}});
+        if (auto* refused = dynamic_cast<const luminami::SetupPasswordFailure*>(&error)) {
+            const auto& o = refused->outcome;
+            report["password"] = {{"supplied", true},
+                                  {"submitted", o.submitted},
+                                  {"accepted", false},
+                                  {"unsupported", o.unsupported},
+                                  {"locked_out", o.locked_out},
+                                  {"remaining_attempts", o.remaining_attempts ? luminami::Json(*o.remaining_attempts)
+                                                                               : luminami::Json(nullptr)}};
+        }
         if (possible_firmware_write && !dynamic_cast<const luminami::FirmwareWriteBlocked*>(&error))
             report["firmware_writes_may_have_occurred"] = true;
         else

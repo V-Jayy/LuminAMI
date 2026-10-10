@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [string]$Workspace = (Join-Path (Get-Location) 'LuminAMI-backup'),
-    [string]$Executable
+    [string]$Executable,
+    # Ask for the BIOS administrator password (hidden prompt) on export, apply and restore. See docs/PASSWORD.md.
+    [switch]$AskPassword
 )
 . (Join-Path $PSScriptRoot 'common.ps1')
 $exe = Get-LuminAmiExecutable $Executable
@@ -25,7 +27,7 @@ while ($true) {
         $original = Join-Path $Workspace 'OriginalSettings.txt'
         switch ($choice) {
             '1' {
-                & (Join-Path $PSScriptRoot 'export.ps1') -Workspace $Workspace -Executable $exe
+                & (Join-Path $PSScriptRoot 'export.ps1') -Workspace $Workspace -Executable $exe -AskPassword:$AskPassword
             }
             '2' { Invoke-LuminAmi $exe @('inspect', '--script', $settings) }
             '3' {
@@ -40,12 +42,12 @@ while ($true) {
             '6' {
                 & (Join-Path $PSScriptRoot 'import.ps1') -Workspace $Workspace -Executable $exe
                 if ((Read-Host 'This writes BIOS settings. Type APPLY to continue') -eq 'APPLY') {
-                    & (Join-Path $PSScriptRoot 'import.ps1') -Workspace $Workspace -Apply -Executable $exe
+                    & (Join-Path $PSScriptRoot 'import.ps1') -Workspace $Workspace -Apply -Executable $exe -AskPassword:$AskPassword
                 }
             }
             '7' {
                 if ((Read-Host 'This restores BIOS settings from the backup. Type RESTORE to continue') -eq 'RESTORE') {
-                    & (Join-Path $PSScriptRoot 'restore.ps1') -Workspace $Workspace -Executable $exe
+                    & (Join-Path $PSScriptRoot 'restore.ps1') -Workspace $Workspace -Executable $exe -AskPassword:$AskPassword
                 }
             }
             '8' { Invoke-LuminAmi $exe @('--help') }
