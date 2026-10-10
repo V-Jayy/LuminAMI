@@ -137,6 +137,7 @@ SecretBytes stdin_bios_password() {
         throw Error("--password-stdin needs redirected input, for example: "
                     "'password' | LuminAMI export ... --password-stdin. At a terminal use --ask-password");
     Bytes line;
+    line.reserve(2048); // never reallocates, so no stray copy of the password is left behind
     uint8_t chunk[256];
     DWORD got = 0;
     bool finished = false;
@@ -153,8 +154,11 @@ SecretBytes stdin_bios_password() {
     secure_zero(chunk, sizeof(chunk));
     while (!line.empty() && line.back() == '\r')
         line.pop_back();
-    if (line.size() >= 3 && line[0] == 0xef && line[1] == 0xbb && line[2] == 0xbf)
-        line.erase(line.begin(), line.begin() + 3);
+    if (line.size() >= 3 && line[0] == 0xef && line[1] == 0xbb && line[2] == 0xbf) {
+        std::copy(line.begin() + 3, line.end(), line.begin());
+        secure_zero(line.data() + line.size() - 3, 3);
+        line.resize(line.size() - 3);
+    }
     if (line.empty())
         throw Error("--password-stdin read an empty line; nothing was sent to the firmware");
     return SecretBytes(std::move(line));
