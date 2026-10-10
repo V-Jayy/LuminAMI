@@ -1,6 +1,7 @@
 #include "core.hpp"
 #include <set>
 #include <map>
+#include <optional>
 #include <algorithm>
 
 namespace luminami {
@@ -214,6 +215,10 @@ Json execute_import(const Json& plan, const std::filesystem::path& journal,
     write_json(journal, receipt);
     std::vector<size_t> attempted;
     std::string failure;
+    // Kept only so the final error can keep its type (and, for a refused
+    // password, its safe outcome) after rollback; the message text is unchanged.
+    std::optional<SetupPasswordFailure> password_failure;
+    bool password_required = false;
     try {
         for (size_t i = 0; i < variables.size(); ++i) {
             const auto& p = variables[i];
@@ -236,6 +241,10 @@ Json execute_import(const Json& plan, const std::filesystem::path& journal,
     } catch (const std::exception& e) {
         failure = e.what();
         receipt["error"] = failure;
+        if (auto* refused = dynamic_cast<const SetupPasswordFailure*>(&e))
+            password_failure = *refused;
+        else if (dynamic_cast<const SetupPasswordRequired*>(&e))
+            password_required = true;
     }
     if (!failure.empty() || restore_after) {
         bool restored = true;
@@ -272,8 +281,14 @@ Json execute_import(const Json& plan, const std::filesystem::path& journal,
         write_json(journal, receipt, true);
         if (!restored)
             throw Error("Import restoration incomplete; inspect the recovery journal");
-        if (!failure.empty())
-            throw Error("Import failed; changed fields restored: " + failure);
+        if (!failure.empty()) {
+            const auto message = "Import failed; changed fields restored: " + failure;
+            if (password_failure)
+                throw SetupPasswordFailure(message, password_failure->outcome);
+            if (password_required)
+                throw SetupPasswordRequired(message, 0x9a);
+            throw Error(message);
+        }
     } else {
         receipt["stage"] = variables.empty() ? "unchanged" : "committed";
         receipt["ok"] = true;

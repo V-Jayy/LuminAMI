@@ -159,4 +159,151 @@ Bytes guid_bytes(const std::string& value) {
         throw Error("Invalid GUID");
     return Bytes(reinterpret_cast<uint8_t*>(&guid), reinterpret_cast<uint8_t*>(&guid) + 16);
 }
+// ---- BIOS administrator password handling (docs/PASSWORD.md) ----
+SecretBytes::SecretBytes(Bytes value) : bytes_(std::move(value)) {}
+SecretBytes::SecretBytes(SecretBytes&& other) noexcept : bytes_(std::move(other.bytes_)) {
+    other.bytes_.clear();
+}
+SecretBytes& SecretBytes::operator=(SecretBytes&& other) noexcept {
+    if (this != &other) {
+        wipe();
+        bytes_ = std::move(other.bytes_);
+        other.bytes_.clear();
+    }
+    return *this;
+}
+SecretBytes::~SecretBytes() {
+    wipe();
+}
+void SecretBytes::wipe() {
+    if (!bytes_.empty())
+        secure_zero(bytes_.data(), bytes_.size());
+    bytes_.clear();
+    bytes_.shrink_to_fit();
+}
+void secure_zero(void* data, size_t size) {
+    if (data && size)
+        SecureZeroMemory(data, size);
+}
+SecretBytes secret_from_utf8(std::string& value) {
+    SecretBytes secret(Bytes(value.begin(), value.end()));
+    if (!value.empty())
+        secure_zero(value.data(), value.size());
+    value.clear();
+    value.shrink_to_fit();
+    return secret;
+}
+namespace {
+// Why a password cannot be submitted, or an empty string when it can. Never
+// repeats any part of the password.
+std::string unusable_reason(const SecretBytes& secret) {
+    if (secret.size() > MaxPasswordBytes)
+        return "it is longer than " + std::to_string(MaxPasswordBytes) + " characters";
+    for (auto byte : secret.bytes())
+        if (byte < 0x20 || byte > 0x7e)
+            return "it contains characters other than printable ASCII, which LuminAMI does not submit "
+                   "(it avoids spending one of the firmware's limited attempts on text the BIOS setup "
+                   "screen cannot normally enter)";
+    return {};
+}
+// Defense in depth: if a transport's text ever contained the password, it is
+// replaced before it can reach a report or an error message.
+std::string redact(std::string text, const SecretBytes& secret) {
+    // Very short passwords are not searched for: they would match ordinary words.
+    if (secret.size() < 4 || text.size() < secret.size())
+        return text;
+    const std::string needle(secret.bytes().begin(), secret.bytes().end());
+    for (size_t at = text.find(needle); at != std::string::npos; at = text.find(needle, at))
+        text.replace(at, needle.size(), "[removed]");
+    return text;
+}
+} // namespace
+void validate_setup_password(const SecretBytes& secret) {
+    if (secret.empty())
+        return;
+    const auto problem = unusable_reason(secret);
+    if (problem.empty())
+        return;
+    PasswordUnlockOutcome outcome;
+    outcome.reason = "The BIOS administrator password was not used: " + problem + ". Nothing was sent to the firmware.";
+    throw SetupPasswordFailure(outcome.reason, outcome);
+}
+PasswordAttempt::PasswordAttempt(SecretBytes secret) : secret_(std::move(secret)) {
+    supplied_ = !secret_.empty();
+    try {
+        validate_setup_password(secret_);
+    } catch (...) {
+        secret_.wipe();
+        spent_ = true; // nothing will be sent
+        throw;
+    }
+}
+void PasswordAttempt::submit(const PasswordUnlock& unlock, const std::string& refusal) {
+    spent_ = true; // before anything can fail: there is no second attempt
+    PasswordUnlockOutcome outcome;
+    if (!unlock) {
+        outcome.unsupported = true;
+        outcome.reason = "this connection to the firmware has no way to submit a password";
+    } else {
+        try {
+            outcome = unlock(secret_);
+        } catch (const std::exception& error) {
+            outcome = {};
+            outcome.submitted = true;
+            outcome.reason = std::string("the password submission failed: ") + error.what();
+        }
+    }
+    outcome.reason = redact(outcome.reason, secret_);
+    secret_.wipe(); // the password is not needed again, whatever the answer was
+    outcome_ = outcome;
+    if (outcome.accepted)
+        return;
+    std::string message;
+    if (outcome.unsupported) {
+        message = refusal + " A BIOS administrator password was supplied, but this build of LuminAMI "
+                            "cannot submit one to firmware yet (" +
+                  outcome.reason + "); nothing was sent. See docs/PASSWORD.md.";
+    } else {
+        message = "The firmware did not accept the BIOS administrator password";
+        if (!outcome.reason.empty())
+            message += " (" + outcome.reason + ")";
+        message += ".";
+        if (outcome.remaining_attempts)
+            message += " The firmware reports " + std::to_string(*outcome.remaining_attempts) +
+                       " attempt(s) remaining before it locks further tries.";
+        if (outcome.locked_out)
+            message += " The firmware has stopped accepting attempts; restart the computer before trying again.";
+        message += " LuminAMI does not retry.";
+    }
+    throw SetupPasswordFailure(message, outcome);
+}
+Json password_report(const PasswordAttempt& attempt) {
+    if (!attempt.supplied_)
+        return nullptr;
+    const auto& o = attempt.outcome_;
+    Json report = {{"supplied", true}, {"needed", attempt.spent_}};
+    report["submitted"] = o.submitted;
+    report["accepted"] = o.accepted;
+    report["unsupported"] = o.unsupported;
+    report["locked_out"] = o.locked_out;
+    report["remaining_attempts"] = o.remaining_attempts ? Json(*o.remaining_attempts) : Json(nullptr);
+    report["reason"] = o.reason;
+    return report;
+}
+VariableOperations with_password_unlock(const VariableOperations& base, PasswordAttempt& attempt) {
+    if (!attempt.supplied())
+        return base;
+    VariableOperations guarded = base;
+    const auto unlock = base.unlock_setup_password;
+    if (base.read)
+        guarded.read = [read = base.read, unlock, &attempt](const std::string& name, const std::string& guid) {
+            return attempt.guard(unlock, [&] { return read(name, guid); });
+        };
+    if (base.write)
+        guarded.write = [write = base.write, unlock, &attempt](const std::string& name, const std::string& guid,
+                                                              uint32_t attributes, const Bytes& data) {
+            attempt.guard(unlock, [&] { write(name, guid, attributes, data); });
+        };
+    return guarded;
+}
 } // namespace luminami

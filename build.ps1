@@ -33,6 +33,11 @@ try {
             $testOutput = & (Join-Path $buildDirectory 'LuminAMI-tests.exe')
             if ($LASTEXITCODE -ne 0) { throw 'LuminAMI tests failed.' }
             $testOutput | Write-Output
+            & $compiler @common @librarySources (Join-Path $luminAmiRoot 'tests\password_tests.cpp') 'drivers.res' '/Fe:LuminAMI-password-tests.exe' '/link' 'advapi32.lib' 'bcrypt.lib' 'ole32.lib'
+            if ($LASTEXITCODE -ne 0) { throw 'Password test build failed.' }
+            $passwordOutput = & (Join-Path $buildDirectory 'LuminAMI-password-tests.exe')
+            if ($LASTEXITCODE -ne 0) { throw 'LuminAMI password tests failed.' }
+            $passwordOutput | Write-Output
             $fixtureLine = $testOutput | Where-Object { $_.StartsWith('Fixture artifacts: ') } | Select-Object -First 1
             if (-not $fixtureLine) { throw 'Offline tests did not report their fixture directory.' }
             & (Join-Path $luminAmiRoot 'tests\cli_tests.ps1') -Executable (Join-Path $buildDirectory 'LuminAMI.exe') -Fixtures $fixtureLine.Substring(19)

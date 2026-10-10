@@ -237,6 +237,8 @@ Json export_live_workflow(const std::filesystem::path& capture, const std::files
     result["capture"] = utf8(capture.wstring());
     if (captured.contains("transport"))
         result["transport"] = captured["transport"];
+    if (captured.contains("password"))
+        result["password"] = captured["password"]; // only present when one was supplied
     return result;
 }
 Json export_capture(const std::filesystem::path& capture, const std::filesystem::path& script,
