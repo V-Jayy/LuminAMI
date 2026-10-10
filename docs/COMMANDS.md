@@ -25,9 +25,14 @@ settings rendering, file writes, and driver cleanup. Offline export times only
 rendering from the saved capture. It excludes process startup and report output.
 
 Both short commands accept `--driver PATH`, `--install-drivers`, and
-`--non-interactive`. `-p <password>` refers to the existing BIOS password, but
-authentication is currently unsupported: the command fails before driver setup
-or writes, and does not echo the password.
+`--non-interactive`. For a board that asks for the BIOS administrator password
+you set in BIOS setup, add `--ask-password` (hidden prompt) or
+`--password-stdin` (first line of redirected input). A password is never a
+command-line value: `-p <password>` and SCEWIN's `/CPWD <password>` fail before
+driver setup and are never echoed. The password is optional, used at most once,
+and never stored or printed. Read [BIOS administrator password](PASSWORD.md) first:
+this build recognises the request and handles the password safely but cannot yet
+submit it to real firmware.
 
 `install` launches the GitHub release installer in the background, waits for the
 current executable to exit, and updates the per-user installation and PATH.
@@ -41,7 +46,8 @@ Existing bare commands and SCEWIN-style aliases remain available.
 
 Run `LuminAMI.cmd` for the numbered menu, or `LuminAMI.exe --help` in a terminal.
 Commands print JSON. Exit code `0` means success; `1` means failure. Options need
-values except `--plan`, `--no-path`, `--install-drivers` and `--non-interactive`. Duplicate/unknown options
+values except `--plan`, `--no-path`, `--install-drivers`, `--non-interactive`,
+`--ask-password` and `--password-stdin`. Duplicate/unknown options
 are rejected, and operation output files aren't replaced.
 
 ## Shortcuts
@@ -60,7 +66,9 @@ also accepts `-Executable PATH`. It finds the release executable or `build` copy
 automatically. Put paths with spaces in quotes.
 
 Live scripts also accept `-InstallDrivers` to select the provided drivers and
-`-NonInteractive` to prevent prompts. A supplied `-Driver PATH` takes priority
+`-NonInteractive` to prevent prompts. `Export.cmd`, `Import.cmd -Apply`,
+`Restore.cmd` and `LuminAMI.cmd` accept `-AskPassword`, which makes LuminAMI show its
+hidden BIOS administrator password prompt (see [PASSWORD.md](PASSWORD.md)). A supplied `-Driver PATH` takes priority
 and is saved. Don't combine `-Driver` with `-InstallDrivers`.
 
 ## Driver commands
@@ -100,11 +108,14 @@ output shows the summary. Offline `import` validates and plans; it never writes.
 | `diagnose` | — | `--output JSON` | No |
 | `list-variables` | — | `--output JSON` | No |
 | `read-variable` | `--name NAME --guid GUID` | `--output JSON` | No |
-| `capture-ami` | `--output NEW-DIR` | `--driver PATH --report JSON` | No |
-| `export` | `--capture NEW-DIR --script NEW-FILE` | `--driver PATH --dupes NEW-FILE --report JSON` | No |
-| `import` | `--capture DIR --script FILE --journal NEW-JSON` | `--driver PATH --report JSON` | Yes |
-| `test-import` | `--capture DIR --script FILE --journal NEW-JSON` | `--driver PATH --report JSON` | Yes, then restores |
-| `restore` | `--capture BACKUP-DIR --journal NEW-JSON` | `--driver PATH --report JSON` | Yes |
+| `capture-ami` | `--output NEW-DIR` | `--driver PATH --report JSON --ask-password` | No |
+| `export` | `--capture NEW-DIR --script NEW-FILE` | `--driver PATH --dupes NEW-FILE --report JSON --ask-password` | No |
+| `import` | `--capture DIR --script FILE --journal NEW-JSON` | `--driver PATH --report JSON --ask-password` | Yes |
+| `test-import` | `--capture DIR --script FILE --journal NEW-JSON` | `--driver PATH --report JSON --ask-password` | Yes, then restores |
+| `restore` | `--capture BACKUP-DIR --journal NEW-JSON` | `--driver PATH --report JSON --ask-password` | Yes |
+
+`--password-stdin` can be used wherever `--ask-password` is listed. Use one or the
+other, and only on the live commands. See [PASSWORD.md](PASSWORD.md).
 
 Driver commands reuse the saved choice when `--driver` is omitted. All live
 commands accept `--install-drivers` and `--non-interactive`. An explicit
@@ -131,7 +142,8 @@ over your input files. Restore keeps a fresh capture alongside its journal.
 
 The aliases are case-insensitive. They don't remove capture, driver, or journal
 requirements. `/CPWD` and `--apply` aren't supported CLI arguments; use ordinary
-`import --driver ... --journal ...`. The script flag `-Apply` is separate.
+`import --driver ... --journal ...`, and `--ask-password` for a protected board
+(the password is never a command-line value). The script flag `-Apply` is separate.
 
 ## Hardware validation commands
 

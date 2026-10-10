@@ -82,6 +82,15 @@ attributes, and readback through both interfaces. Failures retain transaction
 rollback. This fallback does not override firmware access policy; successful
 fallback writes on other firmware have not yet been hardware-validated.
 
+## BIOS administrator password
+
+A board with an administrator password can refuse protected variables with AMI
+status `154` (`0x9A`), the same status as the AMD protection above. LuminAMI
+tells them apart: the AMD setting is read from verified HII before any write;
+anything else with status `154` is reported with its original text, and is the
+case where a password you supply can be used. See [PASSWORD.md](PASSWORD.md) for
+what is and is not implemented.
+
 ## Regression coverage
 
 Offline tests cover AMD protection enabled, disabled, absent, malformed and

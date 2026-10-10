@@ -2,6 +2,8 @@
 
 Build with `./build.ps1 -Test` before opening a pull request. Keep offline tests
 offline; don't add a test that writes to someone's BIOS during a normal build.
+Never put a real BIOS password in a test, a fixture, an issue or a log; the password
+tests use a simulated firmware and made-up strings.
 Use the included `.clang-format` for C++ changes.
 
 If you're reporting a board compatibility issue, include your board model, BIOS

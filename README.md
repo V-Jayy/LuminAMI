@@ -58,13 +58,16 @@ LuminAMI ami import --capture BIOSSettings.txt.capture --script BIOSSettings.txt
 Your driver choice is saved and reused from any folder. Export offers setup if
 none is saved. Both short commands accept `--driver PATH`, `--install-drivers`,
 `--non-interactive`, and `--capture DIR` for a moved/renamed settings file.
-`-p <password>` is reserved for your existing BIOS password; authentication isn't
-supported yet, so using it returns an error without logging the password.
+If your board asks for the BIOS administrator password you set in BIOS setup, add
+`--ask-password` (hidden prompt). It is optional, never a command-line value, never
+stored or printed, and LuminAMI never sets or changes a BIOS password. This build
+recognises the request and handles the password safely but cannot yet submit it
+to real firmware; see [BIOS administrator password](docs/PASSWORD.md).
 
 BIOS writes can leave a system unable to boot. Know your board's recovery process.
 Read compatibility and write testing are limited; see [compatibility](docs/COMPATIBILITY.md).
 Use LuminAMI exports with their matching captures, not SCEWIN files.
-[Commands](docs/COMMANDS.md) · [Editing](docs/SETTINGS.md) · [Drivers](docs/DRIVERS.md)
+[Commands](docs/COMMANDS.md) · [Editing](docs/SETTINGS.md) · [Drivers](docs/DRIVERS.md) · [BIOS password](docs/PASSWORD.md)
 
 ## Export benchmark
 
