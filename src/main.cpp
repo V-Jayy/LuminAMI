@@ -37,8 +37,7 @@ Export/import options: --capture DIR, --driver PATH, --install-drivers,
 Only if your board asks for the BIOS administrator password you set in BIOS
 setup: --ask-password (hidden prompt) or --password-stdin. It is never a
 command-line value. See docs/PASSWORD.md.
--p <password> is reserved for the existing BIOS password; authentication is
-currently unsupported and returns an error without logging the password.
+-p <password> is refused: use the hidden prompt or redirected input instead.
 Live export/import need an administrator terminal. Import writes firmware.
 Keep the .capture folder with its settings file. Existing outputs are preserved.
 )";
@@ -236,9 +235,9 @@ BIOS ADMINISTRATOR PASSWORD (optional; only for a board that asks for it)
 --ask-password reads it at a hidden prompt; --password-stdin reads the first line
 of redirected input. Never a command-line value. It is submitted at most once per
 command, never retried, never stored, and never printed. LuminAMI does not set,
-change or clear a BIOS password. This build recognises a board's request for the
-password and handles it safely, but cannot yet submit one to real firmware; it
-says so rather than guess. See docs/PASSWORD.md.
+change or clear a BIOS password. AMI authentication is submitted only when a
+protected operation needs it; variable access is re-locked when the command ends.
+Firmware support varies. See docs/PASSWORD.md.
 
 Export to a new capture uses the saved driver, or offers provided/custom drivers
 in an interactive terminal. --install-drivers extracts provided drivers without
@@ -575,9 +574,10 @@ int wmain(int argc, wchar_t** argv) {
                 optional("--non-interactive");
                 result = export_capture(capture, script, duplicate_path);
             }
-            result["latency_ms"] =
-                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started)
-                    .count() / 1000.0;
+            result["latency_ms"] = std::chrono::duration_cast<std::chrono::microseconds>(
+                                       std::chrono::steady_clock::now() - started)
+                                       .count() /
+                                   1000.0;
             if (!error_report.empty())
                 write_json(error_report, result);
         } else if (command == "import" || command == "test-import") {
@@ -671,8 +671,9 @@ int wmain(int argc, wchar_t** argv) {
                                   {"accepted", false},
                                   {"unsupported", o.unsupported},
                                   {"locked_out", o.locked_out},
-                                  {"remaining_attempts", o.remaining_attempts ? luminami::Json(*o.remaining_attempts)
-                                                                               : luminami::Json(nullptr)}};
+                                  {"remaining_attempts", o.remaining_attempts
+                                                             ? luminami::Json(*o.remaining_attempts)
+                                                             : luminami::Json(nullptr)}};
         }
         if (possible_firmware_write && !dynamic_cast<const luminami::FirmwareWriteBlocked*>(&error))
             report["firmware_writes_may_have_occurred"] = true;

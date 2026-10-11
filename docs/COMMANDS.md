@@ -31,8 +31,8 @@ you set in BIOS setup, add `--ask-password` (hidden prompt) or
 command-line value: `-p <password>` and SCEWIN's `/CPWD <password>` fail before
 driver setup and are never echoed. The password is optional, used at most once,
 and never stored or printed. Read [BIOS administrator password](PASSWORD.md) first:
-this build recognises the request and handles the password safely but cannot yet
-submit it to real firmware.
+this build submits the AMI authentication request and re-locks access afterward.
+Firmware support varies; protected hardware validation is still required.
 
 `install` launches the GitHub release installer in the background, waits for the
 current executable to exit, and updates the per-user installation and PATH.

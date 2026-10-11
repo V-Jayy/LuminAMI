@@ -89,7 +89,9 @@ status `154` (`0x9A`), the same status as the AMD protection above. LuminAMI
 tells them apart: the AMD setting is read from verified HII before any write;
 anything else with status `154` is reported with its original text, and is the
 case where a password you supply can be used. See [PASSWORD.md](PASSWORD.md) for
-what is and is not implemented.
+the shared AMI authentication transport, re-locking, firmware responses and
+remaining hardware validation. It has no motherboard-model allowlist; OEM
+firmware can still differ.
 
 ## Regression coverage
 

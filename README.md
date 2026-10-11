@@ -60,9 +60,10 @@ none is saved. Both short commands accept `--driver PATH`, `--install-drivers`,
 `--non-interactive`, and `--capture DIR` for a moved/renamed settings file.
 If your board asks for the BIOS administrator password you set in BIOS setup, add
 `--ask-password` (hidden prompt). It is optional, never a command-line value, never
-stored or printed, and LuminAMI never sets or changes a BIOS password. This build
-recognises the request and handles the password safely but cannot yet submit it
-to real firmware; see [BIOS administrator password](docs/PASSWORD.md).
+stored or printed by LuminAMI, and LuminAMI never sets or changes a BIOS password.
+It submits the AMI authentication request when a protected operation needs it and
+re-locks variable access afterward. Firmware support varies; see
+[BIOS administrator password](docs/PASSWORD.md).
 
 BIOS writes can leave a system unable to boot. Know your board's recovery process.
 Read compatibility and write testing are limited; see [compatibility](docs/COMPATIBILITY.md).

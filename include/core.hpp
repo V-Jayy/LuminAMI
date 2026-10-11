@@ -61,7 +61,7 @@ inline constexpr size_t MaxPasswordBytes = 64;
 // The result of one password attempt. Never carries the password; `reason` is
 // safe to print and to put in a report.
 struct PasswordUnlockOutcome {
-    bool submitted = false;   // anything was actually sent to the firmware
+    bool submitted = false; // anything was actually sent to the firmware
     bool accepted = false;
     bool unsupported = false; // this build cannot submit a password; not a verdict on the password
     bool locked_out = false;  // the firmware reported its retry limit
@@ -123,6 +123,26 @@ Json password_report(const PasswordAttempt& attempt);
 void validate_setup_password(const SecretBytes& secret);
 // Whether this build can submit a password to real AMI firmware.
 bool password_submission_supported();
+// The AMI authentication control channel reconstructed in docs/PASSWORD.md.
+// Each exchange must return the firmware status, never packet contents.
+class SetupPasswordChannel {
+  public:
+    using Exchange = std::function<uint32_t(Bytes&)>;
+    SetupPasswordChannel(uint32_t physical, Exchange exchange);
+    ~SetupPasswordChannel();
+    SetupPasswordChannel(const SetupPasswordChannel&) = delete;
+    SetupPasswordChannel& operator=(const SetupPasswordChannel&) = delete;
+    PasswordUnlockOutcome submit(const SecretBytes& password);
+    void relock();
+    Json run(const std::function<Json()>& operation);
+
+  private:
+    uint32_t physical_;
+    Exchange exchange_;
+    bool attempted_ = false;
+    bool relock_needed_ = false;
+    uint32_t exchange(Bytes packet);
+};
 Bytes read_file(const std::filesystem::path& path);
 void write_file(const std::filesystem::path& path, const Bytes& bytes, bool replace = false);
 void write_json(const std::filesystem::path& path, const Json& value, bool replace = false);
@@ -164,6 +184,12 @@ Bytes smi(uint16_t port, uint8_t command, uint32_t physical);
 Bytes get_variable(uint32_t physical, const std::string& name, const std::string& guid, uint32_t capacity);
 Bytes set_variable(uint32_t physical, const std::string& name, const std::string& guid, uint32_t attributes,
                    const Bytes& data);
+inline constexpr const char* SetupPasswordName = "$SETUPPASSWD";
+inline constexpr const char* SetupPasswordGuid = "5855ce1b-fb8e-47e4-bc1a-39ecaa0c96cf";
+Bytes setup_password(uint32_t physical, const SecretBytes& password);
+Bytes setup_password_probe(uint32_t physical);
+Bytes setup_password_relock(uint32_t physical);
+Bytes setup_password_delete(uint32_t physical);
 Bytes next_variable(uint32_t physical, const std::string& name, const std::string& guid);
 Bytes hii_read(uint32_t physical, uint32_t address, uint32_t size);
 Bytes wsmt(uint16_t port);

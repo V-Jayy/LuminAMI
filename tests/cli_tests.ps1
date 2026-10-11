@@ -35,10 +35,15 @@ function Invoke-Raw {
     $info.RedirectStandardError = $true
     $info.CreateNoWindow = $true
     $process = [System.Diagnostics.Process]::Start($info)
-    if ($StdIn.Length) { $process.StandardInput.BaseStream.Write($StdIn, 0, $StdIn.Length); $process.StandardInput.BaseStream.Flush() }
-    $process.StandardInput.Close()
     $outTask = $process.StandardOutput.ReadToEndAsync()
     $errTask = $process.StandardError.ReadToEndAsync()
+    try {
+        if ($StdIn.Length) { $process.StandardInput.BaseStream.Write($StdIn, 0, $StdIn.Length); $process.StandardInput.BaseStream.Flush() }
+        $process.StandardInput.Close()
+    } catch [System.IO.IOException] {
+        # Commands that reject options before reading stdin may close the pipe immediately.
+        # Still inspect their exit code and diagnostics below.
+    }
     $process.WaitForExit()
     $result = [pscustomobject]@{ ExitCode = $process.ExitCode; Out = $outTask.Result; Err = $errTask.Result }
     if ($ErrorFile) { [System.IO.File]::WriteAllText($ErrorFile, $result.Err) }

@@ -7,6 +7,7 @@
 #include <chrono>
 #include <thread>
 #include <set>
+#include <memory>
 
 namespace luminami {
 namespace {
@@ -30,6 +31,7 @@ class AmiSession {
     bool wsmt_ = false;
     uint32_t driver_version_ = 0;
     std::set<std::string> runtime_written_;
+    std::unique_ptr<SetupPasswordChannel> password_channel_;
     static bool mapped(uint8_t* address, size_t length) {
         MEMORY_BASIC_INFORMATION info{};
         if (!VirtualQuery(address, &info, sizeof(info)) || info.State != MEM_COMMIT ||
@@ -39,6 +41,7 @@ class AmiSession {
         return displacement <= info.RegionSize && length <= info.RegionSize - displacement;
     }
     void cleanup() noexcept {
+        password_channel_.reset(); // re-lock while the mapped buffer and driver still exist
         if (device_ != INVALID_HANDLE_VALUE) {
             if (memory_ && !wsmt_) {
                 // Release takes the user-mapped virtual address, not the physical address.
@@ -165,6 +168,10 @@ class AmiSession {
             physical_ = static_cast<uint32_t>(physical);
             if (!mapped(memory_, capacity_))
                 throw Error("AMI allocation is not fully mapped into this process");
+            password_channel_ = std::make_unique<SetupPasswordChannel>(physical_, [&](Bytes& packet) {
+                packet = invoke(std::move(packet));
+                return static_cast<uint32_t>((read_le(packet, 0, 4) & 0xff00) >> 8);
+            });
         } catch (...) {
             cleanup();
             throw;
@@ -186,9 +193,16 @@ class AmiSession {
             throw Error("AMI request exceeds mapped buffer");
         std::fill(memory_, memory_ + capacity_, uint8_t{0});
         std::copy(packet.begin(), packet.end(), memory_);
-        auto registers = protocol::smi(port_, 0xef, physical_ + static_cast<uint32_t>(header_offset));
-        ioctl(protocol::Smi, registers);
-        std::copy(memory_, memory_ + packet.size(), packet.begin());
+        try {
+            auto registers = protocol::smi(port_, 0xef, physical_ + static_cast<uint32_t>(header_offset));
+            ioctl(protocol::Smi, registers);
+            std::copy(memory_, memory_ + packet.size(), packet.begin());
+        } catch (...) {
+            secure_zero(memory_, capacity_);
+            secure_zero(packet.data(), packet.size());
+            throw;
+        }
+        secure_zero(memory_, capacity_);
         return packet;
     }
     Json variable(const std::string& name, const std::string& guid) {
@@ -242,7 +256,8 @@ class AmiSession {
             } catch (const std::exception& e) {
                 // Same text as ever; the type lets a supplied BIOS password be tried once.
                 throw SetupPasswordRequired("AMI SetVariable rejected for " + name +
-                                                " (EFI_SECURITY_VIOLATION, firmware status 154 / 0x9A); " + e.what(),
+                                                " (EFI_SECURITY_VIOLATION, firmware status 154 / 0x9A); " +
+                                                e.what(),
                                             0x9a);
             }
         }
@@ -251,16 +266,11 @@ class AmiSession {
                                     std::to_string(status) + ")",
                                 static_cast<uint32_t>(status));
     }
-    // The one place a BIOS administrator password would reach the firmware.
-    // Submitting it needs AMI's request format for that step, which LuminAMI's
-    // research does not contain and which this project does not guess at (a wrong
-    // guess could spend one of the board's limited attempts). Until that is
-    // established this reports "unsupported" and sends nothing. docs/PASSWORD.md.
-    PasswordUnlockOutcome submit_setup_password(const SecretBytes&) {
-        PasswordUnlockOutcome outcome;
-        outcome.unsupported = true;
-        outcome.reason = "submitting the administrator password to real AMI firmware is not implemented";
-        return outcome;
+    PasswordUnlockOutcome submit_setup_password(const SecretBytes& password) {
+        return password_channel_->submit(password);
+    }
+    Json password_operation(const std::function<Json()>& operation) {
+        return password_channel_->run(operation);
     }
     Bytes hii(const std::function<Json(const std::string&, const std::string&)>& read_variable) {
         auto variable_info = read_variable("HiiDB", protocol::HiiGuid);
@@ -296,12 +306,10 @@ VariableOperations session_operations(AmiSession& session, PasswordAttempt& atte
         };
     return with_password_unlock(raw, attempt);
 }
-Json capture_ami_with(const std::filesystem::path& driver, const std::filesystem::path& output,
-                      PasswordAttempt& attempt) {
+Json capture_ami_session(AmiSession& session, const std::filesystem::path& output, PasswordAttempt& attempt) {
     if (std::filesystem::exists(output))
         throw Error("Capture directory already exists");
     auto status = probe_windows();
-    AmiSession session(driver);
     status["ami_session"] = session.transport();
     const auto reading = session_operations(session, attempt, false);
     auto hii = session.hii(reading.read);
@@ -350,27 +358,35 @@ Json capture_ami_with(const std::filesystem::path& driver, const std::filesystem
                              " unexpected variable read failures; see capture.json";
         for (const auto& entry : errors)
             if (entry.value("status", 0u) == 0x9au)
-                throw SetupPasswordRequired(message, 0x9a); // same text; typed so a caller can ask for the password
+                throw SetupPasswordRequired(message,
+                                            0x9a); // same text; typed so a caller can ask for the password
         throw Error(message);
     }
     Json captured = {{"ok", true},
-            {"path", utf8(output.wstring())},
-            {"questions", catalog["questions"].size()},
-            {"variables", variables.size()},
-            {"unavailable_variables", unavailable.size()},
-            {"transport", session.transport()},
-            {"writes_firmware", false},
-            {"validation", "read capture only; write and reboot checks still required"}};
+                     {"path", utf8(output.wstring())},
+                     {"questions", catalog["questions"].size()},
+                     {"variables", variables.size()},
+                     {"unavailable_variables", unavailable.size()},
+                     {"transport", session.transport()},
+                     {"writes_firmware", false},
+                     {"validation", "read capture only; write and reboot checks still required"}};
     if (attempt.supplied())
         captured["password"] = password_report(attempt);
     return captured;
+}
+Json capture_ami_with(const std::filesystem::path& driver, const std::filesystem::path& output,
+                      PasswordAttempt& attempt) {
+    if (std::filesystem::exists(output))
+        throw Error("Capture directory already exists");
+    AmiSession session(driver);
+    return session.password_operation([&] { return capture_ami_session(session, output, attempt); });
 }
 Json apply_ami_with(const std::filesystem::path& driver, const std::filesystem::path& capture,
                     const std::filesystem::path& script, const std::filesystem::path& journal,
                     bool restore_after, PasswordAttempt& attempt);
 } // namespace
 bool password_submission_supported() {
-    return false; // see AmiSession::submit_setup_password and docs/PASSWORD.md
+    return true; // firmware compatibility is checked by the control-variable probe
 }
 Json capture_ami(const std::filesystem::path& driver, const std::filesystem::path& output,
                  SecretBytes password) {
@@ -385,15 +401,15 @@ Json export_ami(const std::filesystem::path& driver, const std::filesystem::path
                                 [&] { return capture_ami_with(driver, capture, attempt); });
 }
 Json apply_ami(const std::filesystem::path& driver, const std::filesystem::path& capture,
-               const std::filesystem::path& script, const std::filesystem::path& journal,
-               bool restore_after, SecretBytes password) {
+               const std::filesystem::path& script, const std::filesystem::path& journal, bool restore_after,
+               SecretBytes password) {
     PasswordAttempt attempt(std::move(password));
     return apply_ami_with(driver, capture, script, journal, restore_after, attempt);
 }
 namespace {
-Json apply_ami_with(const std::filesystem::path& driver, const std::filesystem::path& capture,
-                    const std::filesystem::path& script, const std::filesystem::path& journal,
-                    bool restore_after, PasswordAttempt& attempt) {
+Json apply_ami_session(AmiSession& session, const std::filesystem::path& capture,
+                       const std::filesystem::path& script, const std::filesystem::path& journal,
+                       bool restore_after, PasswordAttempt& attempt) {
     if (std::filesystem::exists(journal))
         throw Error("Import journal already exists");
     auto plan = plan_import(capture, script);
@@ -401,7 +417,6 @@ Json apply_ami_with(const std::filesystem::path& driver, const std::filesystem::
     if (current.at("smbios_sha256").get<std::string>().empty() ||
         current.at("smbios_sha256") != plan.at("platform").at("smbios_sha256"))
         throw Error("Live hardware identity differs from the export");
-    AmiSession session(driver);
     const auto operations = session_operations(session, attempt, true);
     const auto live_hii = session.hii(operations.read);
     if (sha256(live_hii) != plan.at("hii_sha256").get<std::string>())
@@ -424,6 +439,20 @@ Json apply_ami_with(const std::filesystem::path& driver, const std::filesystem::
         applied["password"] = password_report(attempt); // the journal never holds it
     return applied;
 }
+Json apply_ami_with(const std::filesystem::path& driver, const std::filesystem::path& capture,
+                    const std::filesystem::path& script, const std::filesystem::path& journal,
+                    bool restore_after, PasswordAttempt& attempt) {
+    if (std::filesystem::exists(journal))
+        throw Error("Import journal already exists");
+    const auto plan = plan_import(capture, script); // validate before loading a driver
+    const auto current = probe_windows();
+    if (current.at("smbios_sha256").get<std::string>().empty() ||
+        current.at("smbios_sha256") != plan.at("platform").at("smbios_sha256"))
+        throw Error("Live hardware identity differs from the export");
+    AmiSession session(driver);
+    return session.password_operation(
+        [&] { return apply_ami_session(session, capture, script, journal, restore_after, attempt); });
+}
 } // namespace
 Json restore_ami(const std::filesystem::path& driver, const std::filesystem::path& target_capture,
                  const std::filesystem::path& journal, SecretBytes password) {
@@ -433,10 +462,13 @@ Json restore_ami(const std::filesystem::path& driver, const std::filesystem::pat
     current_capture += L".capture";
     auto rebased_script = journal;
     rebased_script += L".settings.txt";
-    PasswordAttempt attempt(std::move(password)); // one attempt for the whole restore
-    capture_ami_with(driver, current_capture, attempt);
-    plan_restore(target_capture, current_capture, rebased_script);
-    return apply_ami_with(driver, current_capture, rebased_script, journal, false, attempt);
+    PasswordAttempt attempt(std::move(password)); // one attempt and one driver session for the whole restore
+    AmiSession session(driver);
+    return session.password_operation([&] {
+        capture_ami_session(session, current_capture, attempt);
+        plan_restore(target_capture, current_capture, rebased_script);
+        return apply_ami_session(session, current_capture, rebased_script, journal, false, attempt);
+    });
 }
 Json test_roundtrip(const std::filesystem::path& capture, const std::filesystem::path& script,
                     const std::filesystem::path& driver, const std::filesystem::path& journal,
@@ -461,7 +493,9 @@ Json test_roundtrip(const std::filesystem::path& capture, const std::filesystem:
     if (current["smbios_sha256"] != plan["platform"]["smbios_sha256"])
         throw Error("Hardware identity differs from the reviewed capture");
     AmiSession session(driver);
-    if (sha256(session.hii([&](const std::string& n, const std::string& g) { return session.variable(n, g); })) != plan["hii_sha256"].get<std::string>())
+    if (sha256(session.hii([&](const std::string& n, const std::string& g) {
+            return session.variable(n, g);
+        })) != plan["hii_sha256"].get<std::string>())
         throw Error("Live HII changed since the capture");
     auto manifest = Json::parse(read_file(capture / L"capture.json"));
     Json before;
@@ -529,7 +563,8 @@ Json finish_numlock_reboot(const std::filesystem::path& driver, const std::files
     if (probe_windows()["smbios_sha256"] != staged.at("plan").at("platform").at("smbios_sha256"))
         throw Error("Hardware identity differs from the staged test");
     AmiSession session(driver);
-    auto catalog = inspect_hii(session.hii([&](const std::string& n, const std::string& g) { return session.variable(n, g); }));
+    auto catalog = inspect_hii(
+        session.hii([&](const std::string& n, const std::string& g) { return session.variable(n, g); }));
     bool question_matches = false;
     for (const auto& q : catalog.at("questions")) {
         if (q.value("name", std::string{}) != "Bootup NumLock State" || !q.value("writable", false) ||

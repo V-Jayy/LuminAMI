@@ -73,6 +73,36 @@ Bytes set_variable(uint32_t physical, const std::string& name, const std::string
     std::copy(data.begin(), data.end(), packet.end() - static_cast<ptrdiff_t>(data.size()));
     return packet;
 }
+Bytes setup_password(uint32_t physical, const SecretBytes& password) {
+    validate_setup_password(password);
+    if (password.empty())
+        throw Error("A BIOS administrator password is required for authentication");
+    // SCEWIN's /CPWD character count includes its UTF-16 terminator.
+    const auto size = static_cast<uint32_t>((password.size() + 1) * 2);
+    auto packet = get_variable(physical, SetupPasswordName, SetupPasswordGuid, size);
+    put_le(packet, 0, 4, 0x300);
+    put_le(packet, 0x44, 4, 7);
+    const auto offset = packet.size() - size;
+    for (size_t i = 0; i < password.size(); ++i)
+        put_le(packet, offset + i * 2, 2, password.bytes()[i]);
+    return packet;
+}
+Bytes setup_password_probe(uint32_t physical) {
+    auto packet = get_variable(physical, SetupPasswordName, SetupPasswordGuid, 1);
+    put_le(packet, 0x48, 4, 0); // query existence without ever reading password data
+    return packet;
+}
+Bytes setup_password_relock(uint32_t physical) {
+    // SCEWIN re-locks with one zero byte, NOT a zero-length deletion.
+    return set_variable(physical, SetupPasswordName, SetupPasswordGuid, 7, {0});
+}
+Bytes setup_password_delete(uint32_t physical) {
+    // Only for firmware that stored the control request as an ordinary variable.
+    // Ordinary settings deletion remains prohibited by set_variable().
+    auto packet = setup_password_relock(physical);
+    put_le(packet, 0x48, 4, 0);
+    return packet;
+}
 Bytes hii_read(uint32_t physical, uint32_t source, uint32_t size) {
     constexpr uint32_t request_offset = 0xfc4;
     if (!size || size > request_offset || source > UINT32_MAX - size)
