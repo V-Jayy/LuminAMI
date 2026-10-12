@@ -262,6 +262,72 @@ int main() {
               "Generic driver handles F1C through masked dispatch");
         check(((uint32_t{0xfa002f20} + uint32_t{0x05ffd0e8}) & uint32_t{0xfffffffb}) != 0,
               "Masked dispatch does not accidentally accept F20");
+        // Both drivers load locked. amigendrv's gate admits only the requests whose
+        // (code + 0x05ffd0f8) bit is set in 0x1100000000001 until F34 has been issued.
+        const auto admitted_while_locked = [](uint32_t code) {
+            const uint32_t index = code + uint32_t{0x05ffd0f8};
+            return index <= 0x30 && ((uint64_t{0x1100000000001} >> index) & 1) != 0;
+        };
+        check(admitted_while_locked(protocol::Version) && admitted_while_locked(protocol::Wsmt) &&
+                  !admitted_while_locked(protocol::Allocate) && !admitted_while_locked(protocol::Smi),
+              "A freshly loaded driver refuses allocation and SMI until negotiation is requested");
+        {
+            bool locked = true, fixed_buffer = false;
+            uint32_t largest_allocation = protocol::MaxBuffer, physical = 0x7a000000;
+            std::vector<uint32_t> requests;
+            const protocol::DriverRequest driver = [&](uint32_t code, Bytes& request) -> uint32_t {
+                requests.push_back(code);
+                if (code == protocol::Wsmt) {
+                    locked = false;
+                    if (!fixed_buffer)
+                        return 87; // amigendrv: no firmware context, STATUS_INVALID_PARAMETER
+                    request = negotiation;
+                    return 0;
+                }
+                if (locked || code != protocol::Allocate || read_le(request, 0, 4) > largest_allocation)
+                    return 31;
+                put_le(request, 4, 8, 0x20010000000);
+                put_le(request, 12, 4, physical);
+                return 0;
+            };
+            auto buffer = protocol::open_buffer(0xb2, false, 0, driver);
+            check(!buffer.driver_managed && buffer.physical == 0x7a000000 &&
+                      buffer.virtual_address == 0x20010000000 && buffer.capacity == protocol::MaxBuffer &&
+                      requests == std::vector<uint32_t>{protocol::Wsmt, protocol::Allocate},
+                  "Firmware without a fixed buffer is unlocked by negotiation before allocating");
+            locked = true;
+            largest_allocation = 0x8000;
+            buffer = protocol::open_buffer(0xb2, false, 0, driver);
+            check(!buffer.driver_managed && buffer.capacity == 0x8000,
+                  "Fragmented low memory settles for a smaller communication buffer");
+            largest_allocation = 0;
+            std::string failure;
+            try {
+                (void)protocol::open_buffer(0xb2, false, 0, driver);
+            } catch (const Error& e) {
+                failure = e.what();
+            }
+            check(failure == "AMI buffer allocation failed (IOCTL 4194316064, Windows error 31)",
+                  "Exhausted allocation keeps the established error text");
+            largest_allocation = protocol::MaxBuffer;
+            physical = 0;
+            rejects([&] { (void)protocol::open_buffer(0xb2, false, 0, driver); },
+                    "Allocation without a physical address is rejected");
+            requests.clear();
+            rejects([&] { (void)protocol::open_buffer(0xb2, true, 0, driver); },
+                    "Protected firmware never falls back to an ordinary allocation");
+            check(requests == std::vector<uint32_t>{protocol::Wsmt},
+                  "Refused protected negotiation stops before any allocation request");
+            requests.clear();
+            fixed_buffer = true;
+            buffer = protocol::open_buffer(0xb2, false, 0x77a6d018, driver);
+            check(buffer.driver_managed && buffer.physical == 0x77a6e000 &&
+                      buffer.context_virtual == 0x2000ffff018 && buffer.capacity == protocol::MaxBuffer &&
+                      requests == std::vector<uint32_t>{protocol::Wsmt},
+                  "A negotiated fixed buffer is used whenever the driver offers one");
+            rejects([&] { (void)protocol::open_buffer(0xb2, true, 0x77a6d000, driver); },
+                    "Negotiated buffers are still checked against the published context");
+        }
         rejects([] { (void)protocol::get_variable(0xfffffff0, "Setup", protocol::HiiGuid, 512); },
                 "Reject physical pointer overflow");
         rejects([] { (void)protocol::get_variable(0x1000, "Setup", protocol::HiiGuid, protocol::MaxBuffer); },

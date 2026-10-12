@@ -15,7 +15,7 @@ Windows driver policy can prevent export or import.
 | WSMT fixed-buffer protections advertised | Negotiate through the supported `amigendrv64.sys`; the driver owns the SMI context |
 | WSMT protections with no Windows-visible UEFI ACPI table | Use the same checked negotiation; the missing table is not a rejection |
 | Recognized AMI UEFI table with a context address | Require the negotiated context address to match |
-| No fixed-buffer protections advertised | Use the existing checked AMI allocation/SMI transport |
+| No fixed-buffer protections advertised | Request negotiation first, since both drivers refuse allocation and SMI requests until they receive it. Use a fixed buffer if the driver offers one, otherwise the checked AMI allocation/SMI transport |
 | Negotiation failure, inconsistent buffers, invalid SMI port, blocked driver | Stop and return the error; never disable Windows security or bypass WSMT |
 
 The JSON capture manifest records `platform.ami_session`, and live export
@@ -103,7 +103,13 @@ mismatch and complete restoration. All normal build tests remain offline.
 Offline tests cover negotiation without a published ACPI context, matching and
 conflicting published contexts, opaque template state, truncated packets, port
 and capacity mismatches, null/wrapping addresses, and inconsistent buffer
-pointers. The normal build tests never load a driver or write firmware.
+pointers. They also cover a driver that starts locked: negotiation is requested
+before any allocation, a refusal on unprotected firmware selects an allocated
+buffer (smaller when low memory is fragmented), and a refusal on protected
+firmware stops without allocating. On October 11, 2026, a read-only export
+through the allocated-buffer transport succeeded on an ASUS ROG STRIX X570-F
+GAMING, BIOS 4021; imports on that transport have not been hardware-validated.
+The normal build tests never load a driver or write firmware.
 Script tests also cover firmware option labels containing `=`, including
 `UCLK=MEMCLK/2`: parsing, unchanged import planning, and an offline selection edit.
 

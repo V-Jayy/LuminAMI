@@ -139,6 +139,45 @@ WsmtMapping decode_wsmt(const Bytes& packet, uint16_t port, uint64_t expected_co
     // not a version number. Let the hash-verified driver manage that context.
     return {static_cast<uint32_t>(physical), virtual_address, context_physical, context_virtual};
 }
+std::string request_failure(uint32_t code, uint32_t error) {
+    const char* operation = code == Wsmt       ? "WSMT negotiation"
+                            : code == Version  ? "driver version"
+                            : code == Allocate ? "buffer allocation"
+                            : code == Smi      ? "SMI invocation"
+                                               : "unknown operation";
+    return std::string("AMI ") + operation + " failed (IOCTL " + std::to_string(code) + ", Windows error " +
+           std::to_string(error) + ")";
+}
+CommunicationBuffer open_buffer(uint16_t port, bool protection_required, uint64_t expected_context,
+                                const DriverRequest& request) {
+    // Both supported drivers start locked: until the negotiation request has been
+    // issued once, they refuse everything except Version with STATUS_UNSUCCESSFUL
+    // (Windows error 31). The researched tool therefore always negotiates first,
+    // on every board, and allocates an ordinary buffer only when that is refused.
+    auto negotiation = wsmt(port);
+    if (const auto refused = request(Wsmt, negotiation)) {
+        // Never fall back to an unprotected buffer on firmware that advertises protection.
+        if (protection_required)
+            throw Error(request_failure(Wsmt, refused));
+    } else {
+        const auto mapping = decode_wsmt(negotiation, port, expected_context);
+        return {true, mapping.physical, mapping.virtual_address, MaxBuffer, mapping.context_virtual};
+    }
+    // Contiguous memory below 4 GiB can be fragmented; like the researched tool,
+    // settle for a smaller buffer one page at a time.
+    uint32_t error = 0;
+    for (uint32_t size = MaxBuffer; size >= MinBuffer; size -= 0x1000) {
+        auto packet = allocation(size);
+        error = request(Allocate, packet);
+        if (error)
+            continue;
+        const auto virtual_address = read_le(packet, 4, 8), physical = read_le(packet, 12, 4);
+        if (!virtual_address || !physical || physical > UINT32_MAX - size)
+            throw Error("AMI allocation did not return a valid low physical buffer");
+        return {false, static_cast<uint32_t>(physical), virtual_address, size, 0};
+    }
+    throw Error(request_failure(Allocate, error));
+}
 Bytes wsmt_context(const Bytes& initial, const Bytes& registers) {
     if (initial.size() != 24 || registers.size() != 0x26)
         throw Error("Invalid WSMT context inputs");

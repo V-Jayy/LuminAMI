@@ -66,21 +66,21 @@ class AmiSession {
             service_ = nullptr;
         }
     }
-    void ioctl(uint32_t code, Bytes& packet) {
+    // Returns 0, or the Windows error the driver answered with.
+    uint32_t request(uint32_t code, Bytes& packet) {
         DWORD returned = 0;
         if (!DeviceIoControl(device_, code, packet.data(), static_cast<DWORD>(packet.size()), packet.data(),
                              static_cast<DWORD>(packet.size()), &returned, nullptr)) {
             const auto error = GetLastError();
-            const char* operation = code == protocol::Wsmt       ? "WSMT negotiation"
-                                    : code == protocol::Version  ? "driver version"
-                                    : code == protocol::Allocate ? "buffer allocation"
-                                    : code == protocol::Smi      ? "SMI invocation"
-                                                                 : "unknown operation";
-            throw Error(std::string("AMI ") + operation + " failed (IOCTL " + std::to_string(code) +
-                        ", Windows error " + std::to_string(error) + ")");
+            return error ? error : ERROR_GEN_FAILURE;
         }
         if (returned != packet.size())
             throw Error("AMI IOCTL returned an unexpected byte count");
+        return 0;
+    }
+    void ioctl(uint32_t code, Bytes& packet) {
+        if (const auto error = request(code, packet))
+            throw Error(protocol::request_failure(code, error));
     }
 
   public:
@@ -91,14 +91,15 @@ class AmiSession {
                 throw Error("AMI capture requires an administrator terminal");
             if (!status["smi_port_valid"].get<bool>())
                 throw Error("No valid ACPI SMI port; hardware access refused");
-            wsmt_ = (status["wsmt"].value("protection_flags", uint64_t{0}) & 3) != 0;
+            const bool protection_required =
+                (status["wsmt"].value("protection_flags", uint64_t{0}) & 3) != 0;
             // WSMT describes protections, not AMI protocol compatibility. The
             // hash-verified driver discovers/negotiates the firmware interface,
             // including boards whose UEFI ACPI table is not exposed to Windows.
             port_ = static_cast<uint16_t>(status["smi_port"].get<uint32_t>());
             auto bytes = read_file(driver);
             const bool generic = std::string(verify_ami_driver(bytes).name) == "amigendrv64.sys";
-            if (wsmt_ && !generic)
+            if (protection_required && !generic)
                 throw Error("WSMT protected transport requires the supported amigendrv64.sys");
             ServiceHandle scm(
                 OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE));
@@ -137,35 +138,23 @@ class AmiSession {
             driver_version_ = static_cast<uint32_t>(read_le(version, 0, 4));
             if (read_le(version, 0, 2) < 5)
                 throw Error("AMI driver version is older than the researched interface");
-            capacity_ = protocol::MaxBuffer;
-            uint64_t virtual_address = 0, physical = 0;
-            if (wsmt_) {
-                auto packet = protocol::wsmt(port_);
-                ioctl(protocol::Wsmt, packet);
-                const auto& acpi = status["ami_acpi"];
-                const auto expected_context =
-                    acpi.value("guid", std::string{}) == "baedb05d-f2ce-485b-b454-c251870cdefc"
-                        ? acpi.value("context_physical", uint64_t{0})
-                        : uint64_t{0};
-                const auto mapping = protocol::decode_wsmt(packet, port_, expected_context);
-                physical = mapping.physical;
-                virtual_address = mapping.virtual_address;
-                auto mapped_context = reinterpret_cast<uint8_t*>(mapping.context_virtual);
-                if (!mapped(mapped_context, 0x50))
-                    throw Error("WSMT context is not fully mapped");
-                // The supported driver prepares and reads back the invocation
-                // context inside its SMI IOCTL. Do not write a guessed layout
-                // from userspace; the UEFI table can be absent or unrelated.
-            } else {
-                auto packet = protocol::allocation(capacity_);
-                ioctl(protocol::Allocate, packet);
-                virtual_address = read_le(packet, 4, 8);
-                physical = read_le(packet, 12, 4);
-            }
-            if (!virtual_address || !physical || physical > UINT32_MAX - capacity_)
-                throw Error("AMI allocation did not return a valid low physical buffer");
-            memory_ = reinterpret_cast<uint8_t*>(virtual_address);
-            physical_ = static_cast<uint32_t>(physical);
+            const auto& acpi = status["ami_acpi"];
+            const auto expected_context =
+                acpi.value("guid", std::string{}) == "baedb05d-f2ce-485b-b454-c251870cdefc"
+                    ? acpi.value("context_physical", uint64_t{0})
+                    : uint64_t{0};
+            const auto buffer =
+                protocol::open_buffer(port_, protection_required, expected_context,
+                                      [&](uint32_t code, Bytes& packet) { return request(code, packet); });
+            wsmt_ = buffer.driver_managed;
+            capacity_ = buffer.capacity;
+            // The supported driver prepares and reads back the invocation
+            // context inside its SMI IOCTL. Do not write a guessed layout
+            // from userspace; the UEFI table can be absent or unrelated.
+            if (wsmt_ && !mapped(reinterpret_cast<uint8_t*>(buffer.context_virtual), 0x50))
+                throw Error("WSMT context is not fully mapped");
+            memory_ = reinterpret_cast<uint8_t*>(buffer.virtual_address);
+            physical_ = buffer.physical;
             if (!mapped(memory_, capacity_))
                 throw Error("AMI allocation is not fully mapped into this process");
             password_channel_ = std::make_unique<SetupPasswordChannel>(physical_, [&](Bytes& packet) {

@@ -178,7 +178,21 @@ constexpr uint32_t Smi = 0xFA002F1C;
 constexpr uint32_t Version = 0xFA002F08;
 constexpr uint32_t Wsmt = 0xFA002F34;
 constexpr uint32_t MaxBuffer = 0x11000;
+constexpr uint32_t MinBuffer = 0x2000;
 constexpr const char* HiiGuid = "1b838190-4625-4ead-abc9-cd5e6af18fe0";
+// The communication buffer a driver session ends up with.
+struct CommunicationBuffer {
+    bool driver_managed; // fixed firmware buffer negotiated by the driver (WSMT)
+    uint32_t physical;
+    uint64_t virtual_address;
+    uint32_t capacity;
+    uint64_t context_virtual; // driver_managed only
+};
+// One driver request. Returns 0, or the Windows error the driver answered with.
+using DriverRequest = std::function<uint32_t(uint32_t code, Bytes& packet)>;
+std::string request_failure(uint32_t code, uint32_t error);
+CommunicationBuffer open_buffer(uint16_t port, bool protection_required, uint64_t expected_context,
+                                const DriverRequest& request);
 Bytes allocation(uint32_t size);
 Bytes smi(uint16_t port, uint8_t command, uint32_t physical);
 Bytes get_variable(uint32_t physical, const std::string& name, const std::string& guid, uint32_t capacity);

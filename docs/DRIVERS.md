@@ -95,6 +95,11 @@ Failure stops the command; it does not fall back to unprotected allocation on
 a WSMT-protected system. Unprotected transport still checks driver version,
 mapped buffer bounds, and the ACPI SMI port.
 
+Both drivers refuse allocation and SMI requests with Windows error 31 until the
+negotiation request has been issued once, so LuminAMI sends it on every board.
+On firmware without WSMT protection a refused negotiation is expected and
+selects the ordinary allocated buffer.
+
 If Windows blocks the driver, the command reports the Windows error and stops.
 LuminAMI does not change Secure Boot, Memory Integrity, or driver security policy.
 Driver acceptance does not establish compatibility with every AMI BIOS.
