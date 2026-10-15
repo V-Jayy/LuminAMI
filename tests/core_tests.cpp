@@ -781,36 +781,93 @@ int main() {
             auto plan = Json{
                 {"variables",
                  Json::array({{{"name", "AmdSetupRPL"}, {"guid", "3a997502-647a-4c82-998e-52ef9486a247"}}})}};
+            const auto cbs_guid = "3a997502-647a-4c82-998e-52ef9486a247";
             Json live = {
                 {"name", "AMD_PBS_SETUP"}, {"guid", pbs_guid}, {"attributes", 7}, {"data", "000100"}};
+            Json cbs = {{"name", "AmdSetupRPL"}, {"guid", cbs_guid}, {"attributes", 7}, {"data", "0a0b0c"}};
             size_t reads = 0, writes = 0;
+            bool refuse = false, corrupt = false;
+            uint32_t refusal_status = 0x9a;
+            Bytes last_written;
             VariableOperations operations{
                 [&](const std::string& name, const std::string& guid) {
+                    if (name == "AmdSetupRPL") {
+                        check(guid == cbs_guid, "Probe reads the planned AMD variable");
+                        return cbs;
+                    }
                     check(name == "AMD_PBS_SETUP" && guid == pbs_guid,
                           "Policy address comes from parsed HII");
                     ++reads;
                     return live;
                 },
-                [&](const std::string&, const std::string&, uint32_t, const Bytes&) { ++writes; }};
+                [&](const std::string& name, const std::string& guid, uint32_t attrs, const Bytes& data) {
+                    ++writes;
+                    check(name == "AmdSetupRPL" && guid == cbs_guid && attrs == 7,
+                          "Probe write keeps identity and attributes");
+                    if (refuse && refusal_status == 0x9a)
+                        throw SetupPasswordRequired("AMI SetVariable rejected (status 154)", refusal_status);
+                    if (refuse)
+                        throw FirmwareError("AMI SetVariable failed (other status)", refusal_status);
+                    last_written = data;
+                    if (corrupt)
+                        cbs["data"] = "ffffff";
+                }};
             bool blocked = false;
+            try {
+                check_amd_write_policy(policy, plan, operations);
+            } catch (const FirmwareWriteBlocked&) {
+                blocked = true; // never reached while the firmware accepts the probe
+            }
+            check(!blocked && writes == 1 && last_written == unhex("0a0b0c") && cbs["data"] == "0a0b0c",
+                  "Enabled AMD policy that the firmware accepts is probed with a no-op write");
+            check(check_amd_write_policy(policy, plan, operations) == true,
+                  "Enabled but writable policy is reported so the import can proceed");
+            writes = 0;
+            refuse = true;
+            blocked = false;
             try {
                 check_amd_write_policy(policy, plan, operations);
             } catch (const FirmwareWriteBlocked& e) {
                 blocked = std::string(e.what()).find("reboot") != std::string::npos;
             }
-            check(blocked && writes == 0, "Enabled AMD policy gives an actionable error before any write");
+            check(blocked && writes == 1 && cbs["data"] == "0a0b0c",
+                  "A real firmware refusal gives the actionable error and changes nothing");
+            refuse = false;
+            VariableOperations read_only{operations.read, {}};
+            rejects([&] { check_amd_write_policy(policy, plan, read_only); },
+                    "Enabled policy without a write transport stays blocked");
+            refuse = true;
+            refusal_status = 0x80;
+            blocked = false;
+            try {
+                check_amd_write_policy(policy, plan, operations);
+            } catch (const FirmwareWriteBlocked&) {
+                blocked = true;
+            } catch (const std::exception&) {
+            }
+            check(!blocked, "Other probe failures are not mislabelled as the AMD lock");
+            refuse = false;
+            refusal_status = 0x9a;
+            corrupt = true;
+            rejects([&] { check_amd_write_policy(policy, plan, operations); },
+                    "A probe that changes the variable is an error");
+            corrupt = false;
+            cbs["data"] = "0a0b0c";
+            writes = 0;
             live["data"] = "000000";
-            check_amd_write_policy(policy, plan, operations);
-            check(reads == 2 && writes == 0, "Disabled AMD policy allows normal transaction validation");
+            check(check_amd_write_policy(policy, plan, operations) == false && writes == 0,
+                  "Disabled AMD policy allows normal transaction validation without a probe");
+            const auto reads_so_far = reads;
             live["data"] = "000100";
             auto intel =
                 Json{{"variables",
                       Json::array({{{"name", "Setup"}, {"guid", "ec87d643-eba4-4bb5-a1e5-3f3e36b20da9"}}})}};
             check_amd_write_policy(policy, intel, operations);
-            check(reads == 2, "Intel-only writes do not depend on the AMD policy");
+            check(reads == reads_so_far && writes == 0, "Intel-only writes do not depend on the AMD policy");
             auto missing = Json{{"questions", Json::array()}};
             check_amd_write_policy(missing, plan, operations);
-            check(reads == 2, "Firmware without this policy keeps existing transport behavior");
+            check(reads == reads_so_far && writes == 0,
+                  "Firmware without this policy keeps existing transport behavior");
             live["data"] = "000200";
             rejects([&] { check_amd_write_policy(policy, plan, operations); },
                     "Unknown policy value fails closed");
@@ -822,7 +879,7 @@ int main() {
             live["data"] = "00";
             rejects([&] { check_amd_write_policy(policy, plan, operations); },
                     "Truncated policy variable cannot be interpreted");
-            check(writes == 0, "AMD policy checks never alter firmware protection");
+            check(writes == 0, "AMD policy checks never write when the policy cannot be read");
         }
         {
             Json nvram = baseline_variable;

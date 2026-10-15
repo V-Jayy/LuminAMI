@@ -410,8 +410,10 @@ Json apply_ami_session(AmiSession& session, const std::filesystem::path& capture
     const auto live_hii = session.hii(operations.read);
     if (sha256(live_hii) != plan.at("hii_sha256").get<std::string>())
         throw Error("Live HII changed since export; read BIOS again before importing");
-    check_amd_write_policy(inspect_hii(live_hii), plan, operations);
+    const bool amd_flag_not_enforced = check_amd_write_policy(inspect_hii(live_hii), plan, operations);
     auto receipt = execute_import(plan, journal, operations, restore_after);
+    if (amd_flag_not_enforced)
+        receipt["amd_variable_protection"] = "enabled, firmware accepted a no-op write";
     receipt["transport"] = session.transport();
     receipt["writes_firmware"] = !plan.at("variables").empty();
     receipt["changed_fields"] = plan.at("patches").size();
@@ -424,6 +426,8 @@ Json apply_ami_session(AmiSession& session, const std::filesystem::path& capture
                     {"restored_verified", restore_after},
                     {"transport", session.transport()},
                     {"journal", utf8(journal.wstring())}};
+    if (amd_flag_not_enforced)
+        applied["amd_variable_protection"] = receipt["amd_variable_protection"];
     if (attempt.supplied())
         applied["password"] = password_report(attempt); // the journal never holds it
     return applied;

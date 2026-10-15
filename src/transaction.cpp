@@ -82,17 +82,58 @@ Bytes read_value(const VariableOperations& operations, const PreparedVariable& p
     return bytes;
 }
 } // namespace
-void check_amd_write_policy(const Json& catalog, const Json& plan, const VariableOperations& operations) {
-    bool amd_write = false;
+namespace {
+// CBS, PBS and AOD stores, identified by vendor GUID rather than CPU or board branding.
+bool is_amd_setup_guid(const std::string& guid) {
+    return guid == "3a997502-647a-4c82-998e-52ef9486a247" || guid == "a339d746-f678-49b3-9fc7-54ce0f9df226" ||
+           guid == "5ed15dc0-edef-4161-9151-6014c4cc630c";
+}
+// The setting only says the firmware may refuse. Some boards publish it as
+// Enabled and still accept the write, so ask the firmware: write one planned
+// AMD variable back with exactly the bytes it already holds. A refusal changes
+// nothing; an acceptance is a no-op. Returns after readback shows no change.
+void probe_amd_write(const Json& plan, const VariableOperations& operations) {
+    const FirmwareWriteBlocked blocked(
+        "AMD Variable Protection is Enabled in BIOS (AMD PBS). Firmware blocks CBS/PBS/AOD "
+        "imports from Windows. Set AMD Variable Protection to Disabled in BIOS, save and "
+        "reboot, then export fresh settings before importing. No BIOS settings were written.");
+    if (!operations.write)
+        throw blocked;
     for (const auto& v : plan.at("variables")) {
-        const auto guid = v.at("guid").get<std::string>();
-        // CBS, PBS and AOD stores, identified by vendor GUID rather than CPU or board branding.
-        if (guid == "3a997502-647a-4c82-998e-52ef9486a247" ||
-            guid == "a339d746-f678-49b3-9fc7-54ce0f9df226" || guid == "5ed15dc0-edef-4161-9151-6014c4cc630c")
-            amd_write = true;
-    }
-    if (!amd_write)
+        const auto name = v.at("name").get<std::string>(), guid = v.at("guid").get<std::string>();
+        if (!is_amd_setup_guid(guid))
+            continue;
+        const auto live = operations.read(name, guid);
+        if (live.at("name") != name || live.at("guid") != guid || live.at("attributes") != 7)
+            throw Error("AMD variable identity or attributes differ: " + name);
+        const auto bytes = unhex(live.at("data").get<std::string>());
+        if (bytes.empty())
+            throw Error("AMD variable is empty: " + name);
+        try {
+            operations.write(name, guid, 7, bytes);
+        } catch (const SetupPasswordRequired&) {
+            throw blocked;
+        } catch (const FirmwareError& e) {
+            if (e.status == 0x9a)
+                throw blocked;
+            throw;
+        }
+        const auto after = operations.read(name, guid);
+        if (after.at("name") != name || after.at("guid") != guid || after.at("attributes") != 7 ||
+            unhex(after.at("data").get<std::string>()) != bytes)
+            throw Error("AMD write probe changed the variable: " + name);
         return;
+    }
+    throw blocked;
+}
+} // namespace
+bool check_amd_write_policy(const Json& catalog, const Json& plan, const VariableOperations& operations) {
+    bool amd_write = false;
+    for (const auto& v : plan.at("variables"))
+        amd_write |= is_amd_setup_guid(v.at("guid").get<std::string>());
+    if (!amd_write)
+        return false;
+    bool enabled_but_writable = false;
     for (const auto& q : catalog.at("questions")) {
         if (q.value("name", "") != "AMD Variable Protection" || !q.contains("variable") ||
             q.value("width", 0) != 1 || q.value("opcode", 0) != 5 ||
@@ -114,14 +155,15 @@ void check_amd_write_policy(const Json& catalog, const Json& plan, const Variabl
         if (bytes.size() != store.at("size").get<size_t>())
             throw Error("AMD protection variable size differs");
         const auto value = read_le(bytes, q.at("offset").get<size_t>(), 1);
-        if (value == 1)
-            throw FirmwareWriteBlocked(
-                "AMD Variable Protection is Enabled in BIOS (AMD PBS). Firmware blocks CBS/PBS/AOD "
-                "imports from Windows. Set AMD Variable Protection to Disabled in BIOS, save and "
-                "reboot, then export fresh settings before importing. No BIOS settings were written.");
-        if (value != 0)
+        if (value == 1) {
+            if (!enabled_but_writable) {
+                probe_amd_write(plan, operations); // throws FirmwareWriteBlocked on a real refusal
+                enabled_but_writable = true;
+            }
+        } else if (value != 0)
             throw Error("Unknown AMD Variable Protection value; read BIOS again");
     }
+    return enabled_but_writable;
 }
 void write_runtime_fallback(const Json& before, const Bytes& data, const VariableOperations& ami,
                             const VariableOperations& runtime) {

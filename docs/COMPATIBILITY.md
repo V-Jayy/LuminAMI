@@ -59,10 +59,17 @@ the write with Windows error `5` (access denied). The recovery journal verified
 that the complete original variable remained intact.
 
 Live imports now inspect the verified HII and read the current protection
-setting before writing any variable. If it is enabled, the import stops with
-the specific BIOS setting and reboot instructions. This applies to mixed
-imports too, so earlier writable settings are not changed before discovering
-the AMD lock. Intel-only imports and firmware without this HII setting retain
+setting before writing any variable. If it is enabled, LuminAMI asks the
+firmware whether it really refuses: it writes one planned AMD variable back
+with the exact bytes it already holds, then reads it again. A refusal (status
+`0x9A`) stops the import with the specific BIOS setting and reboot instructions;
+the variable is unchanged. This applies to mixed imports too, so earlier
+writable settings are not changed before discovering the AMD lock. If the
+firmware accepts that no-op write, the import goes ahead and its journal and
+report note `amd_variable_protection: enabled, firmware accepted a no-op write`.
+This happens on at least one Gigabyte AM5 board (B650 UD AX, BIOS F33a), where
+the setting reads Enabled, is not shown in the BIOS menus, and AMI's own SCEWIN
+imports succeed. Intel-only imports and firmware without this HII setting retain
 their existing behavior. LuminAMI does not change the protection setting.
 
 To allow these imports, set **AMD Variable Protection** to **Disabled** in your

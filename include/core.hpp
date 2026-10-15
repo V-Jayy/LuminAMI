@@ -243,7 +243,10 @@ struct VariableOperations {
 // The same operations, each guarded by `attempt`. With no password supplied this
 // returns `base` unchanged.
 VariableOperations with_password_unlock(const VariableOperations& base, PasswordAttempt& attempt);
-void check_amd_write_policy(const Json& catalog, const Json& plan, const VariableOperations& operations);
+// Returns true when the firmware reports AMD Variable Protection as Enabled but accepted a
+// no-op write of a planned AMD variable, so the import may go ahead. Throws
+// FirmwareWriteBlocked when the firmware really refuses that write.
+bool check_amd_write_policy(const Json& catalog, const Json& plan, const VariableOperations& operations);
 void write_runtime_fallback(const Json& before, const Bytes& data, const VariableOperations& ami,
                             const VariableOperations& runtime);
 Json execute_import(const Json& plan, const std::filesystem::path& journal,
